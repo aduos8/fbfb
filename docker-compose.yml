@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tgosint-postgres
+    environment:
+      POSTGRES_DB: tgosint
+      POSTGRES_USER: tgosint
+      POSTGRES_PASSWORD: tgosint_local
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tgosint -d tgosint"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tgosint-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: tgosint-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tgosint-net
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: tgosint-cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: tgosint-local
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512m"
+      HEAP_NEWSIZE: "128m"
+    command: >
+      sh -c "echo 'sasi_indexes_enabled: true' >> /etc/cassandra/cassandra.yaml
+      && docker-entrypoint.sh cassandra -f"
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    networks:
+      - tgosint-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  cassandra_data:
+
+networks:
+  tgosint-net:
+    name: tgosint-local-net
