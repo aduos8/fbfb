@@ -222,7 +222,7 @@ export default function SignUp() {
                 onClick={() => navigate("/")}
                 className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.80)] hover:text-white transition-colors text-left mt-4 cursor-pointer bg-transparent border-0 p-0"
               >
-                ← Back to home
+                Back to home
               </button>
             </div>
           </div>

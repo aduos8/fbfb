@@ -5,7 +5,7 @@ import Navbar from "@/components/Navbar";
 import { trpc } from "@/lib/trpc";
 import {
   Users, CreditCard, Ticket, ShoppingBag, ScrollText,
-  ShieldEllipsis, LayoutDashboard, ChevronRight, X, Menu
+  ShieldEllipsis, LayoutDashboard, X, Menu
 } from "lucide-react";
 
 const adminNav = [

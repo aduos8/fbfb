@@ -16,6 +16,7 @@ import path from "path";
 
 export function createServer() {
   const app = express();
+  const isVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
 
   app.use(helmet({
     contentSecurityPolicy: {
@@ -107,6 +108,44 @@ export function createServer() {
     });
   });
 
+  app.get("/api/health", async (_req, res) => {
+    const postgresOk = await testConnection();
+
+    const cassandraOk = await (async () => {
+      try {
+        const client = getCassandraClient();
+        await client.connect();
+        await client.execute("SELECT keyspace_name FROM system_schema.keyspaces LIMIT 1");
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    const meilisearchOk = await (async () => {
+      if (!process.env.MEILISEARCH_URL || !process.env.MEILISEARCH_API_KEY) {
+        return false;
+      }
+
+      try {
+        const result = await healthCheckMeilisearch();
+        return result.status === "available";
+      } catch {
+        return false;
+      }
+    })();
+
+    const healthy = postgresOk && cassandraOk && meilisearchOk;
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? "ok" : "degraded",
+      services: {
+        postgres: postgresOk ? "ok" : "down",
+        cassandra: cassandraOk ? "ok" : "down",
+        meilisearch: meilisearchOk ? "ok" : "down",
+      },
+    });
+  });
+
   app.get("/api/debug/env", (_req, res) => {
     const oxaKey = process.env.OXAPAY_MERCHANT_KEY;
     res.json({
@@ -134,7 +173,7 @@ export function createServer() {
 
   app.use("/api/trpc", express.json({ limit: "10kb" }), trpcHandler);
 
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && !isVercel) {
     const distPath = path.join(process.cwd(), "dist", "spa");
     app.use(express.static(distPath));
     app.use((_req, res) => {
@@ -167,7 +206,9 @@ export function createServer() {
     }
   });
 
-  startTrackingMonitor();
+  if (!isVercel) {
+    startTrackingMonitor();
+  }
 
   return app;
 }

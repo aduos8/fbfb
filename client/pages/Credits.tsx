@@ -43,7 +43,39 @@ const transactionTypeConfig: Record<string, {
     color: "#05df72",
     icon: CreditCard,
   },
+  credit_added: {
+    label: "CREDIT ADDED",
+    color: "#05df72",
+    icon: Plus,
+  },
 };
+
+function getTransactionConfig(txn: any) {
+  const amount = Number(txn.amount || 0);
+  const typeKey = txn.transaction_type || "";
+  const known = transactionTypeConfig[typeKey];
+
+  if (known) return known;
+
+  if (amount > 0) {
+    return transactionTypeConfig.credit_added;
+  }
+
+  return transactionTypeConfig.credit_deducted;
+}
+
+function getCompactTypeLabel(txn: any): string {
+  const typeKey = txn.transaction_type || "";
+  const amount = Number(txn.amount || 0);
+
+  if (typeKey === "credit_deducted" || amount < 0) return "DEBIT";
+  if (typeKey === "voucher_redemption") return "REDEEM";
+  if (typeKey === "subscription_credit") return "SUB";
+  if (typeKey === "purchase") return "BUY";
+  if (typeKey === "admin_adjustment") return amount >= 0 ? "ADD" : "DEBIT";
+  if (amount > 0) return "ADD";
+  return "DEBIT";
+}
 
 function getFriendlyDescription(txn: any): string {
   const type = txn.transaction_type || "";
@@ -188,14 +220,11 @@ export default function Credits() {
   };
 
   const handleShowMore = () => {
-    gsap.to(tableRef.current, {
-      opacity: 0.5,
-      duration: 0.15,
-      onComplete: () => {
-        setDisplayCount((prev) => prev + PAGE_SIZE);
-        gsap.to(tableRef.current, { opacity: 1, duration: 0.2 });
-      },
-    });
+    gsap.to(tableRef.current, { opacity: 0.5, duration: 0.15 });
+    setTimeout(() => {
+      setDisplayCount((prev) => prev + PAGE_SIZE);
+      gsap.to(tableRef.current, { opacity: 1, duration: 0.2 });
+    }, 150);
   };
 
   return (
@@ -298,8 +327,8 @@ export default function Credits() {
                 {displayedTransactions.length > 0 ? (
                   <>
                     {displayedTransactions.map((txn, index) => {
-                      const typeKey = txn.transaction_type || "credit_deducted";
-                      const config = transactionTypeConfig[typeKey] || transactionTypeConfig.credit_deducted;
+                      const typeKey = txn.transaction_type || "";
+                      const config = getTransactionConfig(txn);
                       const IconComponent = config.icon;
                       const isPositive = (txn.amount as number) > 0;
                       const date = txn.created_at
@@ -338,7 +367,7 @@ export default function Credits() {
                                   className="font-sans font-normal text-[12px] sm:text-[13px] md:text-[15px] sm:hidden"
                                   style={{ color: config.color }}
                                 >
-                                  {typeKey === "credit_deducted" ? "DEBIT" : typeKey === "voucher_redemption" ? "REDEEM" : typeKey === "subscription_credit" ? "SUB" : "ADMIN"}
+                                  {getCompactTypeLabel(txn)}
                                 </span>
                               </div>
                               <span className="font-sans font-normal text-[12px] sm:text-[13px] md:text-[15px] text-white/90 truncate">

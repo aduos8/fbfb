@@ -2,6 +2,31 @@ import { useRef, useEffect } from "react";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
 
+function actionLabel(action?: string | null): string {
+  if (!action) return "Unknown action";
+
+  const exactLabels: Record<string, string> = {
+    credit_adjustment: "Credits adjusted",
+    credit_set_balance: "Credit balance set",
+    user_role_change: "User role changed",
+    purchase_refund: "Purchase refunded",
+    voucher_create: "Voucher created",
+    voucher_update: "Voucher updated",
+    voucher_delete: "Voucher deleted",
+    user_suspend: "User suspended",
+    user_activate: "User activated",
+  };
+
+  const known = exactLabels[action];
+  if (known) return known;
+
+  return action
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 export default function AdminOverview() {
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -89,7 +114,7 @@ export default function AdminOverview() {
               {logList.slice(0, 5).map((log: any, i: number) => (
                 <div key={i} className="py-3 border-b border-white/[0.04] last:border-0">
                   <div className="flex items-center justify-between">
-                    <span className="font-sans font-medium text-[12px] md:text-[13px] text-white/70">{log.action || "Unknown action"}</span>
+                    <span className="font-sans font-medium text-[12px] md:text-[13px] text-white/70">{actionLabel(log.action)}</span>
                     <span className="font-sans font-normal text-[10px] text-white/30">
                       {log.created_at ? new Date(log.created_at).toLocaleDateString() : ""}
                     </span>

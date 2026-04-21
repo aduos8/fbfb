@@ -11,10 +11,7 @@ import { toast } from "sonner";
 import { RefreshCw, PauseCircle, Eye, ArrowRight, Coins } from "lucide-react";
 
 function formatDate(value: string | null | undefined) {
-  if (!value) {
-    return "—";
-  }
-
+  if (!value) return "—";
   return new Date(value).toLocaleString("en-GB", {
     day: "numeric",
     month: "short",

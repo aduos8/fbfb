@@ -3,6 +3,31 @@ import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
 import { ScrollText, RefreshCw, Filter } from "lucide-react";
 
+function actionLabel(action?: string | null): string {
+  if (!action) return "Unknown";
+
+  const exactLabels: Record<string, string> = {
+    credit_adjustment: "Credits adjusted",
+    credit_set_balance: "Credit balance set",
+    user_role_change: "User role changed",
+    purchase_refund: "Purchase refunded",
+    voucher_create: "Voucher created",
+    voucher_update: "Voucher updated",
+    voucher_delete: "Voucher deleted",
+    user_suspend: "User suspended",
+    user_activate: "User activated",
+  };
+
+  const known = exactLabels[action];
+  if (known) return known;
+
+  return action
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 export default function AdminAuditLogs() {
   const contentRef = useRef<HTMLDivElement>(null);
   const [actionFilter, setActionFilter] = useState("");
@@ -103,8 +128,8 @@ export default function AdminAuditLogs() {
                   <span className="font-mono text-[11px] text-white/40">{log.admin_id || log.adminId || "—"}</span>
                 </td>
                 <td className="px-4 py-4">
-                  <span className="font-sans font-medium text-[13px] text-white/70 capitalize">
-                    {log.action?.replace(/_/g, " ") || "Unknown"}
+                  <span className="font-sans font-medium text-[13px] text-white/70">
+                    {actionLabel(log.action)}
                   </span>
                 </td>
                 <td className="px-4 py-4">
@@ -114,13 +139,13 @@ export default function AdminAuditLogs() {
                   <span className="font-sans font-normal text-[11px] text-white/30 line-clamp-1">
                     {(() => {
                       try {
-                        const meta = typeof log.metadata === 'string' ? JSON.parse(log.metadata) : log.metadata;
+                        const meta = typeof log.metadata === "string" ? JSON.parse(log.metadata) : log.metadata;
                         if (!meta) return "—";
-                        if (log.action === 'credit_adjustment' || log.action === 'credit_set_balance') {
-                          return `${meta.amount > 0 ? '+' : ''}${meta.amount} credits${meta.reason ? ` - ${meta.reason}` : ''}`;
+                        if (log.action === "credit_adjustment" || log.action === "credit_set_balance") {
+                          return `${meta.amount > 0 ? "+" : ""}${meta.amount} credits${meta.reason ? ` - ${meta.reason}` : ""}`;
                         }
-                        if (log.action === 'user_role_change') return `Role: ${meta.role}`;
-                        if (log.action === 'purchase_refund') return meta.reason || "Refunded";
+                        if (log.action === "user_role_change") return `Role: ${meta.role}`;
+                        if (log.action === "purchase_refund") return meta.reason || "Refunded";
                         return meta.reason || JSON.stringify(meta);
                       } catch { return "—"; }
                     })()}

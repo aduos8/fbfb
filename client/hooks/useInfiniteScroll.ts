@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 
-interface UseInfiniteScrollOptions {
+interface ScrollOpts {
   threshold?: number;
   rootMargin?: string;
   enabled?: boolean;
@@ -8,44 +8,44 @@ interface UseInfiniteScrollOptions {
 
 export function useInfiniteScroll<T>(
   fetchMore: (page: number) => Promise<{ items: T[]; hasMore: boolean } | null>,
-  options: UseInfiniteScrollOptions = {}
+  opts: ScrollOpts = {}
 ) {
-  const { threshold = 0.1, rootMargin = "100px", enabled = true } = options;
+  const { threshold = 0.1, rootMargin = "100px", enabled = true } = opts;
   const [items, setItems] = useState<T[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<Error | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const loadMore = useCallback(async () => {
-    if (isLoading || !hasMore || !enabled) return;
+    if (loading || !hasMore || !enabled) return;
 
-    setIsLoading(true);
-    setError(null);
+    setLoading(true);
+    setErr(null);
 
     try {
-      const result = await fetchMore(page + 1);
-      if (result) {
-        setItems(prev => [...prev, ...result.items]);
-        setHasMore(result.hasMore);
+      const res = await fetchMore(page + 1);
+      if (res) {
+        setItems(prev => [...prev, ...res.items]);
+        setHasMore(res.hasMore);
         setPage(prev => prev + 1);
       } else {
         setHasMore(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error("Failed to load more"));
+    } catch (e) {
+      setErr(e instanceof Error ? e : new Error("load failed"));
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, [fetchMore, page, isLoading, hasMore, enabled]);
+  }, [fetchMore, page, loading, hasMore, enabled]);
 
-  const reset = useCallback((initialItems?: T[]) => {
-    setItems(initialItems || []);
+  const reset = useCallback((init?: T[]) => {
+    setItems(init || []);
     setPage(1);
     setHasMore(true);
-    setError(null);
+    setErr(null);
   }, []);
 
   useEffect(() => {
@@ -53,30 +53,15 @@ export function useInfiniteScroll<T>(
 
     observerRef.current = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isLoading) {
-          loadMore();
-        }
+        if (entries[0].isIntersecting && hasMore && !loading) loadMore();
       },
       { threshold, rootMargin }
     );
 
     observerRef.current.observe(sentinelRef.current);
 
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
-      }
-    };
-  }, [enabled, hasMore, isLoading, loadMore, threshold, rootMargin]);
+    return () => observerRef.current?.disconnect();
+  }, [enabled, hasMore, loading, loadMore, threshold, rootMargin]);
 
-  return {
-    items,
-    setItems,
-    sentinelRef,
-    hasMore,
-    isLoading,
-    error,
-    loadMore,
-    reset,
-  };
+  return { items, setItems, sentinelRef, hasMore, isLoading: loading, error: err, loadMore, reset };
 }

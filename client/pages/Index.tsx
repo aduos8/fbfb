@@ -44,6 +44,19 @@ function parseNumber(value: string | undefined) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function sanitizeHighlightedSnippet(rawHtml: string) {
+  const escaped = rawHtml
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  return escaped
+    .replace(/&lt;mark&gt;/g, "<mark>")
+    .replace(/&lt;\/mark&gt;/g, "</mark>");
+}
+
 function buildUnifiedSearchInput(query: string, type: SearchType, filters: Record<string, string>, page: number, limit: number) {
   const normalizedQuery = trimValue(query);
 
@@ -110,7 +123,7 @@ function buildUnifiedSearchInput(query: string, type: SearchType, filters: Recor
 }
 
 function HighlightedMarkup({ html }: { html: string }) {
-  return <span dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span dangerouslySetInnerHTML={{ __html: sanitizeHighlightedSnippet(html) }} />;
 }
 
 function ResultCard({
@@ -298,21 +311,23 @@ function ResultCard({
                 {title}
               </span>
             </div>
-            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <div className="flex items-center gap-2 mb-1">
               {subtitle && (
                 <span className="font-sans font-normal text-[12px] text-[#3A2AEE] leading-tight">
                   {subtitle}
                 </span>
               )}
-              <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.25)] leading-tight">
+              <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.25)] leading-tight truncate">
                 {profileId}
               </span>
-              {secondaryMeta && (
-                <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight">
+            </div>
+            {secondaryMeta && (
+              <div className="mb-1.5 min-w-0">
+                <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight block truncate">
                   {secondaryMeta}
                 </span>
-              )}
-            </div>
+              </div>
+            )}
             {result.redaction.applied && (
               <span className="font-sans font-normal text-[10px] text-[#ff8080] uppercase">
                 redacted

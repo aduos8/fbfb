@@ -2,6 +2,7 @@ import { getPaymentInfo, isPaidStatus } from '../../lib/oxapay';
 import { getPaymentSessionByTrackId, completePaymentSession } from '../../lib/db/paymentSessions';
 import { completePurchase, getPurchaseByTrackId } from '../../lib/db/purchases';
 import { createSubscription, PLAN_CREDITS } from '../../lib/db/subscriptions';
+import { completeAddonPurchase, getAddonPurchaseBySessionId, grantEntitlement } from '../../lib/db/entitlements';
 import { sql } from '../../lib/db';
 import type { Request, Response } from 'express';
 
@@ -10,6 +11,21 @@ function creditsToPlanType(credits: number): 'basic' | 'intermediate' | 'advance
   if (credits === PLAN_CREDITS.intermediate) return 'intermediate';
   if (credits === PLAN_CREDITS.advanced) return 'advanced';
   return null;
+}
+
+function addonExpiryFromCode(code: string): Date | null {
+  const timedAddons = new Set([
+    "analytics-crossref",
+    "analytics-heatmap",
+    "tracking-monitor",
+    "export-csv",
+    "premium-filters",
+    "export-pdf",
+  ]);
+  if (!timedAddons.has(code)) return null;
+  const expiresAt = new Date();
+  expiresAt.setUTCDate(expiresAt.getUTCDate() + 30);
+  return expiresAt;
 }
 
 export default async function handler(req: Request, res: Response) {
@@ -41,25 +57,27 @@ export default async function handler(req: Request, res: Response) {
     console.log('[Oxapay Webhook] Payment status:', info.status);
 
     if (isPaidStatus(info.status)) {
-      console.log('[Oxapay Webhook] Payment confirmed, adding credits:', session.credits, 'to user:', session.user_id);
+      console.log('[Oxapay Webhook] Payment confirmed for session type:', session.type, 'user:', session.user_id);
 
-      await sql.begin(async (trx) => {
-        await trx`
-          UPDATE credits SET balance = balance + ${session.credits}, updated_at = NOW()
-          WHERE user_id = ${session.user_id}
-        `;
+      if (session.credits > 0) {
+        await sql.begin(async (trx) => {
+          await trx`
+            UPDATE credits SET balance = balance + ${session.credits}, updated_at = NOW()
+            WHERE user_id = ${session.user_id}
+          `;
 
-        await trx`
-          INSERT INTO credit_transactions (user_id, amount, type, reference, notes)
-          VALUES (
-            ${session.user_id},
-            ${session.credits},
-            'purchase',
-            ${trackId},
-            ${JSON.stringify({ session_type: session.type, order_id: session.order_id })}
-          )
-        `;
-      });
+          await trx`
+            INSERT INTO credit_transactions (user_id, amount, type, reference, notes)
+            VALUES (
+              ${session.user_id},
+              ${session.credits},
+              'purchase',
+              ${trackId},
+              ${JSON.stringify({ session_type: session.type, order_id: session.order_id })}
+            )
+          `;
+        });
+      }
 
       await completePaymentSession(session.id);
 
@@ -75,6 +93,20 @@ export default async function handler(req: Request, res: Response) {
         const purchase = await getPurchaseByTrackId(trackId);
         if (purchase) {
           await completePurchase(purchase.id);
+        }
+      }
+
+      if (session.type === 'addon') {
+        const addonPurchase = await getAddonPurchaseBySessionId(session.id);
+        if (addonPurchase) {
+          const entitlement = await grantEntitlement({
+            userId: session.user_id,
+            code: addonPurchase.addon_code,
+            source: "addon",
+            expiresAt: addonExpiryFromCode(addonPurchase.addon_code),
+            metadata: { addon_name: addonPurchase.addon_name, payment_track_id: trackId },
+          });
+          await completeAddonPurchase(addonPurchase.id, entitlement.id);
         }
       }
 

@@ -158,7 +158,7 @@ export default function AdminCredits() {
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder={mode === "adjust" ? "e.g. 50 or -20" : "e.g. 200"}
-                  className={`${inputCls} ${mode === "adjust" ? "pl-[84px]" : ""}`}
+                  className={`${inputCls} ${mode === "adjust" ? "pl-[95px]" : ""}`}
                 />
               </div>
             </div>

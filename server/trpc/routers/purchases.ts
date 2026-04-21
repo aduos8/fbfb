@@ -13,6 +13,11 @@ import {
   linkTrackIdToSession,
 } from '../../lib/db/paymentSessions';
 import {
+  listActiveEntitlements,
+  grantEntitlement,
+} from '../../lib/db/entitlements';
+import { sql } from "../../lib/db";
+import {
   PLAN_CREDITS,
   PLAN_PRICES,
   getActiveSubscription,
@@ -38,6 +43,17 @@ const CREDIT_PACKAGES = [
   { credits: 50, price_cents: 4000, label: '50 Credits' },
   { credits: 100, price_cents: 7500, label: '100 Credits' },
 ];
+
+const ADDON_CATALOG = [
+  { code: "data-unlock-profile", name: "Data Unlock: Profile Full Access", credit_cost: 25, entitlement_code: "data-unlock-profile", duration_days: null as number | null },
+  { code: "data-unlock-messages", name: "Data Unlock: Message History Export", credit_cost: 40, entitlement_code: "data-unlock-messages", duration_days: null as number | null },
+  { code: "analytics-crossref", name: "Analytics: Cross-Reference Analysis", credit_cost: 30, entitlement_code: "analytics-crossref", duration_days: 30 },
+  { code: "analytics-heatmap", name: "Analytics: Activity Heatmap", credit_cost: 20, entitlement_code: "analytics-heatmap", duration_days: 30 },
+  { code: "tracking-monitor", name: "Tracking: Profile Monitor Pack", credit_cost: 45, entitlement_code: "tracking-monitor", duration_days: 30 },
+  { code: "export-csv", name: "Export: CSV Bulk Export", credit_cost: 15, entitlement_code: "export-csv", duration_days: 30 },
+  { code: "premium-filters", name: "Premium: Advanced Search Filters", credit_cost: 15, entitlement_code: "premium-filters", duration_days: 30 },
+  { code: "export-pdf", name: "Export: PDF Report", credit_cost: 35, entitlement_code: "export-pdf", duration_days: 30 },
+] as const;
 
 export const purchasesRouter = t.router({
   getPackages: protectedProcedure.query(() => {
@@ -100,6 +116,79 @@ export const purchasesRouter = t.router({
         track_id: invoice.track_id,
         expires_at: invoice.expired_at,
         purchase_id: purchase.id,
+      };
+    }),
+
+  getAddons: protectedProcedure.query(async ({ ctx }) => {
+    const entitlements = await listActiveEntitlements(ctx.userId);
+    const activeCodes = new Set(entitlements.map((entry) => entry.code));
+
+    return ADDON_CATALOG.map((addon) => ({
+      ...addon,
+      active: activeCodes.has(addon.entitlement_code),
+    }));
+  }),
+
+  createAddonPurchase: protectedProcedure
+    .input(
+      z.object({
+        addon_code: z.string().min(1),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const addon = ADDON_CATALOG.find((entry) => entry.code === input.addon_code);
+      if (!addon) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid add-on" });
+      }
+
+      const alreadyActive = (await listActiveEntitlements(ctx.userId)).some(
+        (entry) => entry.code === addon.entitlement_code
+      );
+      if (alreadyActive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Add-on already unlocked" });
+      }
+
+      const expiresAt = addon.duration_days
+        ? new Date(Date.now() + addon.duration_days * 24 * 60 * 60 * 1000)
+        : null;
+
+      await sql.begin(async (trx) => {
+        const [updated] = await trx<{ balance: number }[]>`
+          UPDATE credits
+          SET balance = balance - ${addon.credit_cost}, updated_at = NOW()
+          WHERE user_id = ${ctx.userId} AND balance >= ${addon.credit_cost}
+          RETURNING balance
+        `;
+
+        if (!updated) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Insufficient credits for this add-on" });
+        }
+
+        await trx`
+          INSERT INTO credit_transactions (user_id, amount, type, reference, notes)
+          VALUES (
+            ${ctx.userId},
+            ${-addon.credit_cost},
+            'addon_purchase',
+            ${addon.code},
+            ${JSON.stringify({ addon_name: addon.name, entitlement_code: addon.entitlement_code })}
+          )
+        `;
+      });
+
+      await grantEntitlement({
+        userId: ctx.userId,
+        code: addon.entitlement_code,
+        source: "addon",
+        expiresAt,
+        metadata: { addon_name: addon.name },
+      });
+
+      return {
+        ok: true,
+        addon_code: addon.code,
+        entitlement_code: addon.entitlement_code,
+        expires_at: expiresAt ? expiresAt.toISOString() : null,
       };
     }),
 

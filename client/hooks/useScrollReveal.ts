@@ -4,7 +4,7 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 gsap.registerPlugin(ScrollTrigger);
 
-interface ScrollRevealOptions {
+interface RevealOpts {
   y?: number;
   opacity?: number;
   duration?: number;
@@ -18,11 +18,9 @@ interface ScrollRevealOptions {
   onLeaveBack?: () => void;
 }
 
-export function useScrollReveal<T extends HTMLElement>(
-  options: ScrollRevealOptions = {}
-) {
+export function useScrollReveal<T extends HTMLElement>(opts: RevealOpts = {}) {
   const ref = useRef<T>(null);
-  const hasRun = useRef(false);
+  const ran = useRef(false);
 
   const {
     y = 24,
@@ -36,7 +34,7 @@ export function useScrollReveal<T extends HTMLElement>(
     toggleActions = "play none none none",
     onEnter,
     onLeaveBack,
-  } = options;
+  } = opts;
 
   useEffect(() => {
     const el = ref.current;
@@ -47,7 +45,7 @@ export function useScrollReveal<T extends HTMLElement>(
         ? gsap.utils.toArray<HTMLElement>(".sr-item", el)
         : [el];
 
-      if (targets.length === 0) return;
+      if (!targets.length) return;
 
       gsap.set(targets, { opacity, y });
 
@@ -56,7 +54,7 @@ export function useScrollReveal<T extends HTMLElement>(
         start,
         toggleActions,
         onEnter: () => {
-          if (hasRun.current && staggerFrom !== "start") return;
+          if (ran.current && staggerFrom !== "start") return;
           gsap.to(targets, {
             opacity: 1,
             y: 0,
@@ -66,13 +64,11 @@ export function useScrollReveal<T extends HTMLElement>(
             stagger: stagger > 0 ? { amount: stagger * (targets.length - 1), from: staggerFrom } : 0,
             overwrite: true,
           });
-          hasRun.current = true;
+          ran.current = true;
           onEnter?.();
         },
         onLeaveBack: () => {
-          if (stagger > 0) {
-            gsap.set(targets, { opacity, y });
-          }
+          if (stagger > 0) gsap.set(targets, { opacity, y });
           onLeaveBack?.();
         },
       });
@@ -89,7 +85,7 @@ export function useNavbarScroll() {
   return ref;
 }
 
-export function useParallax(speed: number = 0.15) {
+export function useParallax(speed = 0.15) {
   const ref = useRef<HTMLElement>(null!);
 
   useEffect(() => {
@@ -115,45 +111,35 @@ export function useParallax(speed: number = 0.15) {
   return ref;
 }
 
-export function useMagneticButton<T extends HTMLElement>(
-  strength: number = 0.3
-) {
+export function useMagneticButton<T extends HTMLElement>(strength = 0.3) {
   const ref = useRef<T>(null!);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
 
-    const handleMove = (e: MouseEvent) => {
+    const onMove = (e: MouseEvent) => {
       const rect = el.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
-      const dx = (e.clientX - cx) * strength;
-      const dy = (e.clientY - cy) * strength;
-
       gsap.to(el, {
-        x: dx,
-        y: dy,
+        x: (e.clientX - cx) * strength,
+        y: (e.clientY - cy) * strength,
         duration: 0.35,
         ease: "power2.out",
       });
     };
 
-    const handleLeave = () => {
-      gsap.to(el, {
-        x: 0,
-        y: 0,
-        duration: 0.5,
-        ease: "elastic.out(1, 0.4)",
-      });
+    const onLeave = () => {
+      gsap.to(el, { x: 0, y: 0, duration: 0.5, ease: "elastic.out(1, 0.4)" });
     };
 
-    el.addEventListener("mousemove", handleMove as EventListener);
-    el.addEventListener("mouseleave", handleLeave);
+    el.addEventListener("mousemove", onMove as EventListener);
+    el.addEventListener("mouseleave", onLeave);
 
     return () => {
-      el.removeEventListener("mousemove", handleMove as EventListener);
-      el.removeEventListener("mouseleave", handleLeave);
+      el.removeEventListener("mousemove", onMove as EventListener);
+      el.removeEventListener("mouseleave", onLeave);
     };
   }, [strength]);
 

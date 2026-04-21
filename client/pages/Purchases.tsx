@@ -158,16 +158,13 @@ export default function Purchases() {
   const [activeTab, setActiveTab] = useState<"browse" | "history">("browse");
   const { data: balance } = trpc.account.getBalance.useQuery();
   const { data: purchases } = trpc.purchases.list.useQuery();
+  const { data: addonsData } = trpc.purchases.getAddons.useQuery();
   const [purchasing, setPurchasing] = useState<string | null>(null);
 
-  const createPurchaseMutation = trpc.purchases.createPurchase.useMutation({
+  const createAddonPurchaseMutation = trpc.purchases.createAddonPurchase.useMutation({
     onSuccess: (data) => {
       setPurchasing(null);
-      if (data.payment_url) {
-        window.location.href = data.payment_url;
-      } else {
-        toast.success("Add-on purchased!");
-      }
+      toast.success("Add-on unlocked");
     },
     onError: (e) => {
       toast.error(e.message || "Purchase failed");
@@ -226,13 +223,15 @@ export default function Purchases() {
       return;
     }
     setPurchasing(addon.id);
-    createPurchaseMutation.mutate({
-      credits: addon.credits,
-      price_cents: addon.credits * 100,
+    createAddonPurchaseMutation.mutate({
+      addon_code: addon.id,
     });
   };
 
   const purchaseList = (purchases?.purchases || []) as any[];
+  const addonStatusByCode = new Map<string, boolean>(
+    ((addonsData || []) as any[]).map((addon) => [addon.code, Boolean(addon.active)])
+  );
 
   return (
     <div ref={pageRef} className="min-h-screen bg-[#0F0F11] flex flex-col">
@@ -372,10 +371,10 @@ export default function Purchases() {
                     </div>
                     <button
                       onClick={() => handlePurchase(addon)}
-                      disabled={purchasing === addon.id || createPurchaseMutation.isPending}
+                      disabled={purchasing === addon.id || createAddonPurchaseMutation.isPending || addonStatusByCode.get(addon.id) === true}
                       className="flex items-center gap-2 h-[30px] px-4 rounded-[6px] bg-[#3A2AEE] font-['Plus_Jakarta_Sans'] font-normal text-[10px] text-white transition-all duration-200 hover:bg-[#4f48ff] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed shadow-[inset_0px_2px_0.5px_0px_rgba(255,255,255,0.30)]"
                     >
-                      Get Add-On
+                      {addonStatusByCode.get(addon.id) ? "Unlocked" : "Get Add-On"}
                       <ArrowRight className="w-3 h-3" />
                     </button>
                   </div>

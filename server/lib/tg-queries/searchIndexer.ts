@@ -185,22 +185,26 @@ async function syncIndexDocuments<T extends Record<string, unknown>>(indexName: 
   }
 }
 
-export async function loadSearchSourceData() {
+export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | "messages"> = ["profiles", "chats", "messages"]) {
+  const needsProfiles = scopes.includes("profiles");
+  const needsChats = scopes.includes("chats");
+  const needsMessages = scopes.includes("messages");
+
   const [users, chats, messages] = await Promise.all([
-    listAllUsers(),
-    listAllChats(),
-    listAllMessages(),
+    needsProfiles ? listAllUsers() : Promise.resolve([] as UserRecord[]),
+    needsChats ? listAllChats() : Promise.resolve([] as ChatRecord[]),
+    needsMessages ? listAllMessages() : Promise.resolve([] as MessageRecord[]),
   ]);
 
-  const userIds = users.map(u => u.user_id);
-  const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map();
+  const userIds = scopes.includes("profiles") ? users.map(u => u.user_id) : [];
+  const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
 
   return { users, chats, messages, historyMap };
 }
 
 export async function reindexSearchDocuments() {
   await configureSearchIndices();
-  const { users, chats, messages, historyMap } = await loadSearchSourceData();
+  const { users, chats, messages, historyMap } = await loadSearchSourceData(["profiles", "chats", "messages"]);
 
   await replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));
   await replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
@@ -215,8 +219,9 @@ export async function reindexSearchDocuments() {
 
 export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | "messages">) {
   await configureSearchIndices();
-  const { users, chats, messages, historyMap } = await loadSearchSourceData();
-  const normalizedScopes = scopes && scopes.length > 0 ? scopes : ["profiles", "chats", "messages"];
+  const normalizedScopes: Array<"profiles" | "chats" | "messages"> =
+    scopes && scopes.length > 0 ? scopes : ["profiles", "chats", "messages"];
+  const { users, chats, messages, historyMap } = await loadSearchSourceData(normalizedScopes);
 
   if (normalizedScopes.includes("profiles")) {
     await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));

@@ -16,7 +16,7 @@ import {
 } from "../../lib/tg-queries/searchService";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
 import { ChannelResultSchema, GroupResultSchema, MessageResultSchema, ProfileResultSchema, SearchResultSchema, UnifiedSearchResponseSchema } from "../../../shared/api";
-import { deductSearchCredit, ensureSearchCredits, getViewerAccess } from "../../lib/tg-queries/viewer";
+import { canUseAdvancedFilters, canUseMessageSearch, deductSearchCredit, ensureSearchCredits, getViewerAccess } from "../../lib/tg-queries/viewer";
 
 async function buildSearchContext(ctx: { userId?: string | null; userRole?: string | null }) {
   const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
@@ -36,12 +36,51 @@ async function maybeChargeSearch(ctx: { userId?: string | null }, searchType: st
   return deductSearchCredit(ctx.userId, searchType, query?.slice(0, 200) ?? "");
 }
 
+async function enforceAdvancedFilterAccess(ctx: { userId?: string | null; userRole?: string | null }, input: any) {
+  if (!ctx.userId) return;
+  const filters = input?.filters;
+  if (!filters) return;
+
+  const usesAdvanced =
+    Boolean(filters.dateStart) ||
+    Boolean(filters.dateEnd) ||
+    typeof filters.hasMedia === "boolean" ||
+    typeof filters.containsLinks === "boolean" ||
+    typeof filters.minLength === "number";
+
+  if (!usesAdvanced) return;
+
+  const allowed = await canUseAdvancedFilters(ctx.userId, ctx.userRole);
+  if (!allowed) {
+    throw new z.ZodError([{
+      code: "custom",
+      message: "Advanced filters require Intermediate/Advanced plan or Premium Filters add-on.",
+      path: ["filters"],
+    }]);
+  }
+}
+
+async function enforceMessageSearchAccess(ctx: { userId?: string | null; userRole?: string | null }) {
+  if (!ctx.userId) return;
+  const allowed = await canUseMessageSearch(ctx.userId, ctx.userRole);
+  if (!allowed) {
+    throw new z.ZodError([{
+      code: "custom",
+      message: "Message search requires Pro/Enterprise plan or Message History add-on.",
+      path: ["type"],
+    }]);
+  }
+}
+
 export const searchRouter = router({
   unified: searchModeProcedure
     .meta({ openapi: { method: "GET", path: "/search/unified", protect: true } })
     .input(unifiedSearchSchema)
     .output(UnifiedSearchResponseSchema)
     .query(async ({ ctx, input }) => {
+      if (input.type === "message") {
+        await enforceMessageSearchAccess(ctx);
+      }
       const creditsRemaining = await maybeChargeSearch(ctx, input.type, input.query, input.page);
       const result = await runUnifiedSearch(input, await buildSearchContext(ctx));
 
@@ -95,6 +134,8 @@ export const searchRouter = router({
     .input(messageSearchSchema)
     .output(z.object({ results: z.array(MessageResultSchema), total: z.number(), creditsRemaining: z.number().optional() }))
     .mutation(async ({ ctx, input }) => {
+      await enforceMessageSearchAccess(ctx);
+      await enforceAdvancedFilterAccess(ctx, input);
       const creditsRemaining = await maybeChargeSearch(ctx, "message", input.query ?? input.filters.keyword, input.page);
       const result = await runMessageSearch(input, await buildSearchContext(ctx));
       return creditsRemaining !== undefined ? { ...result, creditsRemaining } : result;

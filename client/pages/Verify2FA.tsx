@@ -152,7 +152,7 @@ export default function Verify2FA() {
                 }}
                 className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.80)] hover:text-white transition-colors text-left mt-6 cursor-pointer bg-transparent border-0 p-0"
               >
-                ← Back to sign in
+                Back to sign in
               </button>
             </div>
           </div>

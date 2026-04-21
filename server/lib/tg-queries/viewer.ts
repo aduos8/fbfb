@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { sql } from "../db";
 import { getActiveSubscription } from "../db/subscriptions";
+import { hasActiveEntitlement } from "../db/entitlements";
 
 export type ViewerRole = "user" | "admin" | "owner";
 
@@ -73,4 +74,36 @@ export async function deductSearchCredit(userId: string, searchType: string, que
 
     return Number(updated.balance);
   });
+}
+
+export async function canUseAdvancedFilters(userId: string, role?: string | null): Promise<boolean> {
+  if (role === "admin" || role === "owner") return true;
+  const sub = await getActiveSubscription(userId);
+  if (sub && (sub.plan_type === "intermediate" || sub.plan_type === "advanced")) {
+    return true;
+  }
+  return hasActiveEntitlement(userId, "premium-filters");
+}
+
+export async function canUseMessageSearch(userId: string, role?: string | null): Promise<boolean> {
+  if (role === "admin" || role === "owner") return true;
+  const sub = await getActiveSubscription(userId);
+  if (sub && (sub.plan_type === "intermediate" || sub.plan_type === "advanced")) {
+    return true;
+  }
+  return hasActiveEntitlement(userId, "data-unlock-messages");
+}
+
+export async function canViewMessageAnalytics(userId: string, role?: string | null): Promise<boolean> {
+  return canUseMessageSearch(userId, role);
+}
+
+export async function canUseProfileFullAccess(userId: string, role?: string | null): Promise<boolean> {
+  if (role === "admin" || role === "owner") return true;
+  return hasActiveEntitlement(userId, "data-unlock-profile");
+}
+
+export async function canUseTrackingPack(userId: string, role?: string | null): Promise<boolean> {
+  if (role === "admin" || role === "owner") return true;
+  return hasActiveEntitlement(userId, "tracking-monitor");
 }

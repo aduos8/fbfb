@@ -1,11 +1,11 @@
-import { useRef, useEffect, useState } from 'react';
-import gsap from 'gsap';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
-import { Link, Navigate } from 'react-router-dom';
-import { useNavbarScroll } from '@/hooks/useScrollReveal';
-import { trpc } from '@/lib/trpc';
-import { isAuthenticated } from '@/lib/auth';
+import { useRef, useEffect, useState } from "react";
+import gsap from "gsap";
+import Navbar from "@/components/Navbar";
+import Footer from "@/components/Footer";
+import { Link, Navigate } from "react-router-dom";
+import { useNavbarScroll } from "@/hooks/useScrollReveal";
+import { trpc } from "@/lib/trpc";
+import { isAuthenticated } from "@/lib/auth";
 
 export default function ForgotPassword() {
   if (isAuthenticated()) {
@@ -15,7 +15,7 @@ export default function ForgotPassword() {
   const pageRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const navScrollRef = useNavbarScroll();
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState("");
   const [done, setDone] = useState(false);
 
   const reset = trpc.auth.requestPasswordReset.useMutation({
@@ -24,8 +24,8 @@ export default function ForgotPassword() {
 
   useEffect(() => {
     const ctx = gsap.context(() => {
-      gsap.set([cardRef.current], { filter: 'blur(10px)', opacity: 0, y: 24 });
-      gsap.to(cardRef.current, { filter: 'blur(0px)', opacity: 1, y: 0, duration: 0.7, ease: 'power3.out', delay: 0.15 });
+      gsap.set([cardRef.current], { filter: "blur(10px)", opacity: 0, y: 24 });
+      gsap.to(cardRef.current, { filter: "blur(0px)", opacity: 1, y: 0, duration: 0.7, ease: "power3.out", delay: 0.15 });
     }, pageRef);
     return () => ctx.revert();
   }, []);
@@ -85,7 +85,7 @@ export default function ForgotPassword() {
                     disabled={reset.isPending}
                     className="w-full h-[40px] rounded-[10px] bg-[#3A2AEE] text-white font-sans font-semibold text-[12px] border-r border-b border-l border-[rgba(255,255,255,0.20)] shadow-[inset_0px_2px_0.5px_0px_rgba(255,255,255,0.30)] hover:bg-[#6B5BFF] transition-colors btn-press disabled:opacity-50"
                   >
-                    {reset.isPending ? 'Sending...' : 'Send reset link'}
+                    {reset.isPending ? "Sending..." : "Send reset link"}
                   </button>
                   <Link to="/login" className="text-center font-sans text-[12px] text-[rgba(255,255,255,0.6)] hover:text-white">
                     Back to sign in

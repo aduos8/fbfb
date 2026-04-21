@@ -2,6 +2,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db";
+import { listActiveEntitlements } from "../../lib/db/entitlements";
 import type { Context } from "../context";
 
 const t = initTRPC.context<Context>().create();
@@ -41,6 +42,19 @@ export const accountRouter = t.router({
       SELECT balance FROM credits WHERE user_id = ${ctx.userId}
     `;
     return { credits: row?.balance ?? 0 };
+  }),
+
+  getEntitlements: protectedProcedure.query(async ({ ctx }) => {
+    const entitlements = await listActiveEntitlements(ctx.userId);
+    return {
+      entitlements: entitlements.map((entry) => ({
+        id: entry.id,
+        code: entry.code,
+        source: entry.source,
+        granted_at: entry.granted_at.toISOString(),
+        expires_at: entry.expires_at ? entry.expires_at.toISOString() : null,
+      })),
+    };
   }),
 
   updateProfile: protectedProcedure

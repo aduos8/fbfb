@@ -1,35 +1,33 @@
-const TOKEN_KEY = "auth_token";
+const K = "auth_token";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(K);
 }
 
-export function setToken(token: string): void {
+export function setToken(t: string): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(K, t);
 }
 
 export function removeToken(): void {
   if (typeof window === "undefined") return;
-  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(K);
 }
 
-export function isAuthenticated(): boolean {
-  const token = getToken();
-  if (!token) return false;
-  if (token.length < 32 || token.length > 512) return false;
-  if (!/^[a-f0-9]+$/i.test(token)) return false;
-  return true;
+export function isAuthed(): boolean {
+  const t = getToken();
+  if (!t) return false;
+  return t.length >= 32 && t.length <= 512 && /^[a-f0-9]+$/i.test(t);
 }
 
-export function getCsrfToken(): string | null {
+export function getCsrf(): string | null {
   if (typeof window === "undefined") return null;
   const meta = document.querySelector('meta[name="csrf-token"]');
   return meta?.getAttribute("content") ?? null;
 }
 
-export function setCsrfToken(token: string): void {
+export function setCsrf(t: string): void {
   if (typeof window === "undefined") return;
   let meta = document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null;
   if (!meta) {
@@ -37,26 +35,25 @@ export function setCsrfToken(token: string): void {
     meta.name = "csrf-token";
     document.head.appendChild(meta);
   }
-  meta.content = token;
+  meta.content = t;
 }
 
-export function isValidEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
+export function validEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-export function isValidUsername(username: string): boolean {
-  return /^[a-zA-Z0-9_-]{3,30}$/.test(username);
+export function validUsername(u: string): boolean {
+  return /^[a-zA-Z0-9_-]{3,30}$/.test(u);
 }
 
-export function sanitizeInput(input: string): string {
-  return input.trim().slice(0, 1000);
+export function cleanInput(s: string): string {
+  return s.trim().slice(0, 1000);
 }
 
-export function isValidUrl(url: string): boolean {
+export function validUrl(url: string): boolean {
   try {
-    const parsed = new URL(url);
-    return ["http:", "https:"].includes(parsed.protocol);
+    const p = new URL(url);
+    return ["http:", "https:"].includes(p.protocol);
   } catch {
     return false;
   }

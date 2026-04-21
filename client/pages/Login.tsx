@@ -149,7 +149,7 @@ export default function Login() {
                         type="password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••••"
+                        placeholder="........"
                         required
                         className="bg-transparent w-full h-full py-2.5 outline-none font-sans font-normal text-[12px] text-[rgba(255,255,255,0.65)] placeholder:text-[rgba(255,255,255,0.25)]"
                       />
@@ -188,7 +188,7 @@ export default function Login() {
                 onClick={() => navigate("/")}
                 className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.80)] hover:text-white transition-colors text-left mt-4 cursor-pointer bg-transparent border-0 p-0"
               >
-                ← Back to home
+                Back to home
               </button>
             </div>
           </div>

@@ -10,7 +10,7 @@ import {
   listChatsByIds,
 } from "../../lib/tg-queries/queries";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
-import { getViewerAccess } from "../../lib/tg-queries/viewer";
+import { canViewMessageAnalytics, getViewerAccess } from "../../lib/tg-queries/viewer";
 import { loadSingleRedaction } from "../../lib/tg-queries/redactions";
 
 const STOP_WORDS = new Set([
@@ -42,6 +42,7 @@ async function buildUserAnalyticsData(
   bucket?: string,
 ) {
   const viewer = await getViewerAccess({ userId: viewerUserId, role: viewerRole });
+  const canAccessMessageInsights = await canViewMessageAnalytics(viewer.userId, viewerRole);
   const userRedaction = await loadSingleRedaction("user", userId);
   if (userRedaction?.type === "full" && !viewer.canBypassRedactions) {
     return {
@@ -95,10 +96,10 @@ async function buildUserAnalyticsData(
   return {
     userId,
     bucket: bucket ?? currentBucket(),
-    activeChats: hideMessages ? [] : activeChats,
-    frequentWords: hideMessages ? [] : frequentWords,
-    groups: hideGroups || hideMessages ? [] : groups,
-    channels: hideChannels || hideMessages ? [] : channels,
+    activeChats: hideMessages || !canAccessMessageInsights ? [] : activeChats,
+    frequentWords: hideMessages || !canAccessMessageInsights ? [] : frequentWords,
+    groups: hideGroups || hideMessages || !canAccessMessageInsights ? [] : groups,
+    channels: hideChannels || hideMessages || !canAccessMessageInsights ? [] : channels,
   };
 }
 

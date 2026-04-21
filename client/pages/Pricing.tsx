@@ -63,7 +63,7 @@ const plans = [
     price: "$99",
     description: "For organizations that demand scale and control.",
     credits: "300 search credits",
-    features: ["Username Search", "Channel Search", "Groups Search", "No Captcha"],
+    features: ["Username Search", "Channel Search", "Groups Search", "Messages Search", "No Captcha", "API Access", "Dedicated Support"],
     border: "1px solid rgba(104,87,227,0.1)",
   },
 ];
@@ -73,7 +73,7 @@ const usageRows = [
   { label: "Channel Searching", core: true, pro: true, enterprise: true },
   { label: "Username Searching", core: true, pro: true, enterprise: true },
   { label: "Groups Searching", core: true, pro: true, enterprise: true },
-  { label: "Messages Search", core: false, pro: true, enterprise: false },
+  { label: "Messages Search", core: false, pro: true, enterprise: true },
   { label: "No Captcha", core: true, pro: true, enterprise: true },
 ];
 
@@ -124,13 +124,9 @@ function FaqRow({ faq, index }: { faq: typeof faqs[0]; index: number }) {
     const ans = ansRef.current;
     if (!ans) return;
     if (open) {
-      gsap.fromTo(ans, { height: 0, opacity: 0 }, {
-        height: "auto",
-        opacity: 1,
-        duration: 0.4,
-        ease: "power3.out",
-        onComplete: () => { ans.style.height = "auto"; },
-      });
+      ans.style.height = "auto";
+      ans.style.opacity = "1";
+      gsap.fromTo(ans, { height: 0 }, { height: ans.scrollHeight + "px", duration: 0.4, ease: "power3.out" });
     } else {
       gsap.to(ans, { height: 0, opacity: 0, duration: 0.25, ease: "power3.in" });
     }

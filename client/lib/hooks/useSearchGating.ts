@@ -38,31 +38,18 @@ export function useSearchGating() {
   }, [balance, hasCredits, isLoading]);
 
   const checkSearch = useCallback((): SearchCheckResult => {
-    if (!isAuthenticated()) {
-      return { allowed: false, reason: "unauthenticated", balance: 0 };
-    }
-
-    if (isLoading) {
-      return { allowed: false, reason: "loading", balance: 0 };
-    }
-
-    if (!hasCredits) {
-      return { allowed: false, reason: "no_credits", balance };
-    }
-
+    if (!isAuthenticated()) return { allowed: false, reason: "unauthenticated", balance: 0 };
+    if (isLoading) return { allowed: false, reason: "loading", balance: 0 };
+    if (!hasCredits) return { allowed: false, reason: "no_credits", balance };
     return { allowed: true, reason: null, balance };
   }, [balance, hasCredits, isLoading]);
-
-  const canSearch = gatingState.status === "ready";
-  const requiresAuth = gatingState.status === "unauthenticated";
-  const requiresCredits = gatingState.status === "no_credits";
 
   return {
     gatingState,
     checkSearch,
-    canSearch,
-    requiresAuth,
-    requiresCredits,
+    canSearch: gatingState.status === "ready",
+    requiresAuth: gatingState.status === "unauthenticated",
+    requiresCredits: gatingState.status === "no_credits",
     refetchCredits: refetch,
   };
 }

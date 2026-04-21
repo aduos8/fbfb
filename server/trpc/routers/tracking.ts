@@ -14,7 +14,7 @@ import {
 } from '../../lib/db/tracking';
 import { loadObservedProfileForUser, chargeTrackingCredits } from '../../lib/trackingSupport';
 import { loadSingleRedaction } from '../../lib/tg-queries/redactions';
-import { getViewerAccess } from '../../lib/tg-queries/viewer';
+import { canUseTrackingPack, getViewerAccess } from '../../lib/tg-queries/viewer';
 import type { Context } from '../context';
 
 const t = initTRPC.context<Context>().create();
@@ -52,6 +52,14 @@ export const trackingRouter = t.router({
     )
     .output(z.object({ tracking: TrackingRecordSchema }))
     .mutation(async ({ ctx, input }) => {
+      const hasTrackingPack = await canUseTrackingPack(ctx.userId, ctx.userRole);
+      if (!hasTrackingPack) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Tracking Monitor Pack add-on is required to start profile tracking.",
+        });
+      }
+
       const existing = await getTrackingByProfile(ctx.userId, input.profileUserId);
       if (existing) {
         throw new TRPCError({

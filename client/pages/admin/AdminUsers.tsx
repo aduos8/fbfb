@@ -16,7 +16,7 @@ function StatusDropdown({ value, onChange }: { value: string; onChange: (v: stri
     { value: "banned", label: "Banned" },
   ];
 
-  const selectedLabel = options.find(o => o.value === value)?.label || "All Users";
+  const selectedLabel = options.find((o) => o.value === value)?.label || "All Users";
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {

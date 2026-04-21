@@ -216,7 +216,7 @@ export default function ProfileLookup() {
                       {currentTracking
                         ? currentTracking.status === "paused"
                           ? "Paused due to insufficient credits. Auto-renews when you add credits."
-                          : `Active · Next renewal ${new Date(currentTracking.next_renewal_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
+                          : `Active. Next renewal ${new Date(currentTracking.next_renewal_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`
                         : "Track this profile to monitor identity changes and renewal status."}
                     </p>
                   </div>

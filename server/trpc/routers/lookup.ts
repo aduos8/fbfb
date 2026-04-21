@@ -21,7 +21,7 @@ import {
   type HistoryRecordLight,
 } from "../../lib/tg-queries/queries";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
-import { getViewerAccess } from "../../lib/tg-queries/viewer";
+import { canUseMessageSearch, canUseProfileFullAccess, getViewerAccess } from "../../lib/tg-queries/viewer";
 import { buildRedactionMetadata, loadSingleRedaction, loadRedactionMap, applyResolvedRedaction } from "../../lib/tg-queries/redactions";
 import { toApiServedAssetUrl } from "../../lib/tg-queries/storageAssets";
 import { getTrackingByProfile } from "../../lib/db/tracking";
@@ -31,6 +31,16 @@ import { getLookupMessage } from "../../lib/tg-queries/searchService";
 function currentBucket() {
   const now = new Date();
   return `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function buildRecentBuckets(monthsBack: number = 12) {
+  const buckets: string[] = [];
+  const now = new Date();
+  for (let offset = 0; offset < monthsBack; offset += 1) {
+    const point = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
+    buckets.push(`${point.getUTCFullYear()}${String(point.getUTCMonth() + 1).padStart(2, "0")}`);
+  }
+  return buckets;
 }
 
 function parseCursor(cursor: string | undefined | null) {
@@ -133,6 +143,11 @@ export const lookupRouter = router({
         redaction: buildRedactionMetadata(redaction),
       };
 
+      const canAccessFullProfile = await canUseProfileFullAccess(viewer.viewer.userId, ctx.userRole);
+      if (!canAccessFullProfile && !viewer.viewer.canBypassRedactions) {
+        result.bio = null;
+      }
+
       const applied = applyResolvedRedaction(result, redaction, viewer.viewer);
 
       return applied as typeof result | null;
@@ -178,6 +193,11 @@ export const lookupRouter = router({
         lastSeen,
         redaction: buildRedactionMetadata(redaction),
       };
+
+      const canAccessFullProfile = await canUseProfileFullAccess(viewer.viewer.userId, ctx.userRole);
+      if (!canAccessFullProfile && !viewer.viewer.canBypassRedactions) {
+        result.bio = null;
+      }
 
       return applyResolvedRedaction(result, redaction, viewer.viewer) as typeof result | null;
     }),
@@ -228,14 +248,28 @@ export const lookupRouter = router({
     }))
     .output(LookupMessagesResponseSchema)
     .query(async ({ ctx, input }) => {
-      const bucket = input.bucket ?? currentBucket();
+      const searchCtx = await buildViewer(ctx);
+      const canAccessMessages = await canUseMessageSearch(searchCtx.viewer.userId, ctx.userRole);
+      if (!canAccessMessages) {
+        return { items: [], nextCursor: null };
+      }
+
       const offset = parseCursor(input.cursor);
-      const rows = await listMessagesByChatBucket(input.chatId, bucket, Math.min(200, offset + input.limit + 1));
+      const buckets = input.bucket ? [input.bucket] : buildRecentBuckets(12);
+      const targetCount = Math.min(200, offset + input.limit + 1);
+      const rows: Awaited<ReturnType<typeof listMessagesByChatBucket>> = [];
+
+      for (const bucket of buckets) {
+        if (rows.length >= targetCount) break;
+        const chunk = await listMessagesByChatBucket(input.chatId, bucket, targetCount - rows.length);
+        if (chunk.length > 0) {
+          rows.push(...chunk);
+        }
+      }
       const page = rows.slice(offset, offset + input.limit + 1);
-      const viewer = await buildViewer(ctx);
 
       const items = (await Promise.all(
-        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), viewer))
+        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx))
       )).filter(Boolean) as z.infer<typeof LookupMessageSchema>[];
 
       return {
@@ -254,14 +288,28 @@ export const lookupRouter = router({
     }))
     .output(LookupMessagesResponseSchema)
     .query(async ({ ctx, input }) => {
-      const bucket = input.bucket ?? currentBucket();
+      const searchCtx = await buildViewer(ctx);
+      const canAccessMessages = await canUseMessageSearch(searchCtx.viewer.userId, ctx.userRole);
+      if (!canAccessMessages) {
+        return { items: [], nextCursor: null };
+      }
+
       const offset = parseCursor(input.cursor);
-      const rows = await listMessagesByUserBucket(input.userId, bucket, Math.min(200, offset + input.limit + 1));
+      const buckets = input.bucket ? [input.bucket] : buildRecentBuckets(12);
+      const targetCount = Math.min(200, offset + input.limit + 1);
+      const rows: Awaited<ReturnType<typeof listMessagesByUserBucket>> = [];
+
+      for (const bucket of buckets) {
+        if (rows.length >= targetCount) break;
+        const chunk = await listMessagesByUserBucket(input.userId, bucket, targetCount - rows.length);
+        if (chunk.length > 0) {
+          rows.push(...chunk);
+        }
+      }
       const page = rows.slice(offset, offset + input.limit + 1);
-      const viewer = await buildViewer(ctx);
 
       const items = (await Promise.all(
-        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), viewer))
+        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx))
       )).filter(Boolean) as z.infer<typeof LookupMessageSchema>[];
 
       return {
@@ -275,7 +323,12 @@ export const lookupRouter = router({
     .input(z.object({ chatId: z.string(), messageId: z.string() }))
     .output(LookupMessageSchema.nullable())
     .query(async ({ ctx, input }) => {
-      return getLookupMessage(input.chatId, input.messageId, await buildViewer(ctx));
+      const searchCtx = await buildViewer(ctx);
+      const canAccessMessages = await canUseMessageSearch(searchCtx.viewer.userId, ctx.userRole);
+      if (!canAccessMessages) {
+        return null;
+      }
+      return getLookupMessage(input.chatId, input.messageId, searchCtx);
     }),
 
   getUserHistory: searchModeProcedure

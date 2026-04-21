@@ -4,7 +4,7 @@ export interface PaymentSession {
   id: string;
   user_id: string;
   oxapay_track_id: string | null;
-  type: 'purchase' | 'subscription';
+  type: 'purchase' | 'subscription' | 'addon';
   status: 'pending' | 'completed' | 'failed' | 'expired';
   order_id: string | null;
   amount_cents: number;
@@ -15,7 +15,7 @@ export interface PaymentSession {
 
 export async function createPaymentSession(
   userId: string,
-  type: 'purchase' | 'subscription',
+  type: 'purchase' | 'subscription' | 'addon',
   amountCents: number,
   credits: number,
   orderId?: string
