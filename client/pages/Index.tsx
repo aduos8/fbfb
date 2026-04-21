@@ -1,89 +1,143 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import gsap from "gsap";
 import { useNavigate } from "react-router-dom";
+import type { ChannelResult, GroupResult, MessageResult, ProfileResult } from "@shared/api";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import SearchBar from "@/components/SearchBar";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
-import { trpc } from "@/lib/trpc";
 import { trpcClient } from "@/App";
-import { isAuthenticated } from "@/lib/auth";
 import { useToast } from "@/components/ui/use-toast";
-import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 
-type SearchType = "username" | "sound" | "people" | "send";
+type SearchType = "profile" | "channel" | "group" | "message";
+type SearchResult = ProfileResult | ChannelResult | GroupResult | MessageResult;
 
-type SearchResult = {
-  resultType?: string;
-  username?: string | null;
-  display_name?: string | null;
-  displayName?: string | null;
-  bio?: string | null;
-  user_id?: string;
-  userId?: string;
-  chat_id?: string;
-  chatId?: string;
-  message_id?: string;
-  messageId?: string;
-  avatar_url?: string | null;
-  avatarUrl?: string | null;
-  content?: string;
-  timestamp?: string | Date | null;
-  created_at?: string | Date | null;
-  member_count?: number;
-  memberCount?: number;
-  chat_type?: string;
-  type?: string;
-  [key: string]: unknown;
+type SearchState = {
+  data: SearchResult[];
+  type: string;
+} | null;
+
+const searchTypeLabelMap: Record<SearchType, string> = {
+  profile: "Profile",
+  channel: "Channel",
+  group: "Group",
+  message: "Message",
 };
 
-interface ResultCardProps {
-  result: SearchResult;
-  resultType: string;
-  searchQuery?: string;
-  onNavigate?: (path: string) => void;
+function trimValue(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
-function HighlightedText({ text, query }: { text: string; query?: string }) {
-  if (!query || !text) {
-    return <>{text}</>;
+function parseBoolean(value: string | undefined) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
+}
+
+function parseNumber(value: string | undefined) {
+  if (!value?.trim()) {
+    return undefined;
   }
 
-  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-  const parts = text.split(regex);
-
-  return (
-    <>
-      {parts.map((part, i) =>
-        regex.test(part) ? (
-          <mark key={i} className="bg-[rgba(58,42,238,0.4)] text-white px-0.5 rounded-sm">
-            {part}
-          </mark>
-        ) : (
-          <span key={i}>{part}</span>
-        )
-      )}
-    </>
-  );
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function ResultCard({ result, resultType, searchQuery, onNavigate }: ResultCardProps) {
+function buildUnifiedSearchInput(query: string, type: SearchType, filters: Record<string, string>, page: number, limit: number) {
+  const normalizedQuery = trimValue(query);
+
+  switch (type) {
+    case "profile":
+      return {
+        type: "profile" as const,
+        query: normalizedQuery,
+        filters: {
+          username: trimValue(filters.username),
+          display_name: trimValue(filters.display_name),
+          number: trimValue(filters.number),
+          bio: trimValue(filters.bio),
+          user_id: trimValue(filters.user_id),
+        },
+        page,
+        limit,
+      };
+    case "channel":
+      return {
+        type: "channel" as const,
+        query: normalizedQuery,
+        filters: {
+          username: trimValue(filters.username),
+          display_name: trimValue(filters.display_name),
+          bio: trimValue(filters.bio),
+          chat_id: trimValue(filters.chat_id),
+        },
+        page,
+        limit,
+      };
+    case "group":
+      return {
+        type: "group" as const,
+        query: normalizedQuery,
+        filters: {
+          username: trimValue(filters.username),
+          display_name: trimValue(filters.display_name),
+          bio: trimValue(filters.bio),
+          chat_id: trimValue(filters.chat_id),
+        },
+        page,
+        limit,
+      };
+    case "message":
+      return {
+        type: "message" as const,
+        query: normalizedQuery,
+        filters: {
+          keyword: normalizedQuery,
+          username: trimValue(filters.username),
+          user_id: trimValue(filters.user_id),
+          chat_id: trimValue(filters.chat_id),
+          dateStart: trimValue(filters.dateStart),
+          dateEnd: trimValue(filters.dateEnd),
+          hasMedia: parseBoolean(filters.hasMedia),
+          containsLinks: parseBoolean(filters.containsLinks),
+          minLength: parseNumber(filters.minLength),
+        },
+        page,
+        limit,
+      };
+  }
+}
+
+function HighlightedMarkup({ html }: { html: string }) {
+  return <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function ResultCard({
+  result,
+  onNavigate,
+}: {
+  result: SearchResult;
+  onNavigate: (path: string) => void;
+}) {
   const borderRef = useRef<HTMLDivElement>(null);
   const chevronRef = useRef<HTMLDivElement>(null);
   const bgRef = useRef<HTMLDivElement>(null);
 
   const handleClick = () => {
-    const userId = result.userId || result.user_id;
-    const chatId = result.chatId || result.chat_id;
-
-    if (resultType === "Profile" && userId) {
-      onNavigate?.(`/lookup/profile/${userId}`);
-    } else if (resultType === "Channel" && chatId) {
-      onNavigate?.(`/lookup/channel/${chatId}`);
-    } else if (resultType === "Group" && chatId) {
-      onNavigate?.(`/lookup/group/${chatId}`);
-    } else if (resultType === "Message" && chatId) {
-      onNavigate?.(`/lookup/channel/${chatId}?highlight=${result.messageId || result.message_id}`);
+    switch (result.resultType) {
+      case "profile":
+        onNavigate(`/lookup/profile/${result.telegramUserId}`);
+        return;
+      case "channel":
+        onNavigate(`/lookup/channel/${result.telegramChatId}`);
+        return;
+      case "group":
+        onNavigate(`/lookup/group/${result.telegramChatId}`);
+        return;
+      case "message":
+        onNavigate(result.contextLink);
+        return;
     }
   };
 
@@ -144,66 +198,75 @@ function ResultCard({ result, resultType, searchQuery, onNavigate }: ResultCardP
     });
   };
 
-  const getAvatar = (): string => {
-    if (result.avatarUrl) return String(result.avatarUrl);
-    if (result.avatar_url) return String(result.avatar_url);
-    if (result.profilePhoto) return String(result.profilePhoto);
-    return `https://i.pravatar.cc/150?u=${result.chatId || result.chat_id || result.userId || result.user_id || "default"}`;
-  };
-
-  const getTitle = (): React.ReactNode => {
-    if ("content" in result) {
-      const content = result.content as string;
-      const snippet = content.slice(0, 100);
-      if (searchQuery && resultType === "Message") {
-        return <HighlightedText text={snippet} query={searchQuery} />;
-      }
-      return snippet + (content.length > 100 ? "..." : "");
+  const avatar = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return result.profilePhoto || `https://i.pravatar.cc/150?u=${result.telegramUserId}`;
+      case "channel":
+      case "group":
+        return result.profilePhoto || `https://i.pravatar.cc/150?u=${result.telegramChatId}`;
+      case "message":
+        return `https://i.pravatar.cc/150?u=${result.chat.chatId}:${result.messageId}`;
     }
-    if (result.displayName) return String(result.displayName);
-    if (result.display_name) return String(result.display_name);
-    if (result.channelTitle) return String(result.channelTitle);
-    if (result.groupTitle) return String(result.groupTitle);
-    return "Unknown";
-  };
+  })();
 
-  const getSubtitle = () => {
-    if (result.username) return `@${result.username}`;
-    if ("messageId" in result) return `Message ID: ${result.messageId}`;
-    return "";
-  };
+  const title = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return result.displayName || result.username || "Unknown User";
+      case "channel":
+        return result.channelTitle || result.username || "Unknown Channel";
+      case "group":
+        return result.groupTitle || result.username || "Unknown Group";
+      case "message":
+        return <HighlightedMarkup html={result.highlightedSnippet} />;
+    }
+  })();
 
-  const getId = () => {
-    if (result.userId) return result.userId;
-    if (result.user_id) return result.user_id;
-    if (result.chatId) return result.chatId;
-    if (result.chat_id) return result.chat_id;
-    if ("messageId" in result) return result.messageId;
-    if ("message_id" in result) return result.message_id;
-    return "";
-  };
+  const subtitle = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return result.username ? `@${result.username}` : null;
+      case "channel":
+        return result.username ? `@${result.username}` : null;
+      case "group":
+        return result.username ? `@${result.username}` : null;
+      case "message":
+        return result.sender.username ? `@${result.sender.username}` : null;
+    }
+  })();
 
-  const getMeta = (): string => {
-    if (result.bio) return String(result.bio);
-    if (result.channelDescription) return String(result.channelDescription);
-    if (result.groupDescription) return String(result.groupDescription);
-    if (result.memberCount) return `${Number(result.memberCount).toLocaleString()} members`;
-    if (result.member_count) return `${Number(result.member_count).toLocaleString()} members`;
-    if ("type" in result && result.type) return String(result.type);
-    if (result.timestamp) return new Date(String(result.timestamp)).toLocaleString();
-    if (result.created_at) return new Date(String(result.created_at)).toLocaleString();
-    return "";
-  };
+  const profileId = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return result.telegramUserId;
+      case "channel":
+        return result.telegramChatId;
+      case "group":
+        return result.telegramChatId;
+      case "message":
+        return result.chatId;
+    }
+  })();
 
-  const getMessageMeta = (): { sender: string | null; chat: string | null; timestamp: string | null } | null => {
-    if (resultType !== "Message") return null;
-    const sender = (result.username || result.user_id || result.userId || "") as string;
-    const chat = (result.chat_id || result.chatId || "") as string;
-    const timestamp = (result.timestamp || result.created_at || "") as string;
-    return { sender: sender || null, chat: chat || null, timestamp: timestamp || null };
-  };
-
-  const messageMeta = getMessageMeta();
+  const secondaryMeta = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return result.bio || result.basicMetadata.trackingStatus || null;
+      case "channel":
+        return result.channelDescription
+          || (result.subscriberCount ? `${result.subscriberCount.toLocaleString()} subscribers` : "Subscriber count unavailable");
+      case "group":
+        return result.groupDescription
+          || `${result.publicIndicator} ${result.groupType || "group"}${result.activityMetrics.participantCount ? ` · ${result.activityMetrics.participantCount.toLocaleString()} participants` : ""}`;
+      case "message":
+        return result.chat.title
+          ? `in ${result.chat.title}${result.timestamp ? ` · ${new Date(result.timestamp).toLocaleString()}` : ""}`
+          : result.timestamp
+            ? new Date(result.timestamp).toLocaleString()
+            : "Message result";
+    }
+  })();
 
   return (
     <div
@@ -225,54 +288,41 @@ function ResultCard({ result, resultType, searchQuery, onNavigate }: ResultCardP
       <div className="relative px-5 py-3">
         <div className="flex items-center gap-4">
           <img
-            src={getAvatar()}
-            alt={String(getTitle())}
+            src={avatar}
+            alt={typeof title === "string" ? title : result.resultType}
             className="w-[56px] h-[56px] rounded-[8px] object-cover flex-shrink-0"
           />
           <div className="flex-1 min-w-0 py-1.5">
             <div className="mb-1.5">
-              <span className="font-sans font-semibold text-[16px] text-white leading-tight block">
-                {getTitle()}
+              <span className="font-sans font-semibold text-[16px] text-white leading-tight block truncate">
+                {title}
               </span>
             </div>
-            {messageMeta ? (
-              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                {messageMeta.sender && (
-                  <span className="font-sans font-normal text-[12px] text-[#3A2AEE] leading-tight">
-                    @{messageMeta.sender}
-                  </span>
-                )}
-                {messageMeta.chat && (
-                  <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight">
-                    in {messageMeta.chat}
-                  </span>
-                )}
-                {messageMeta.timestamp && (
-                  <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight">
-                    {new Date(messageMeta.timestamp as string).toLocaleString()}
-                  </span>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 mb-1.5">
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              {subtitle && (
                 <span className="font-sans font-normal text-[12px] text-[#3A2AEE] leading-tight">
-                  {getSubtitle()}
+                  {subtitle}
                 </span>
+              )}
+              <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.25)] leading-tight">
+                {profileId}
+              </span>
+              {secondaryMeta && (
                 <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight">
-                  {getId()}
+                  {secondaryMeta}
                 </span>
-              </div>
-            )}
-            {!messageMeta && (
-              <span className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.3)] leading-tight block truncate">
-                {getMeta()}
+              )}
+            </div>
+            {result.redaction.applied && (
+              <span className="font-sans font-normal text-[10px] text-[#ff8080] uppercase">
+                redacted
               </span>
             )}
           </div>
           <div className="flex items-center gap-3 flex-shrink-0">
             <div className="flex flex-col items-end gap-1">
               <span className="font-sans font-normal text-[10px] text-[rgba(255,255,255,0.3)] leading-tight uppercase">
-                {resultType}
+                {result.resultType}
               </span>
             </div>
             <div ref={chevronRef}>
@@ -297,23 +347,18 @@ export default function Index() {
   const navScrollRef = useNavbarScroll();
   const navigate = useNavigate();
   const [showResults, setShowResults] = useState(false);
-  const [results, setResults] = useState<{ data: SearchResult[]; type: string } | null>(null);
+  const [results, setResults] = useState<SearchState>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalResults, setTotalResults] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
   const [currentQuery, setCurrentQuery] = useState("");
-  const [currentType, setCurrentType] = useState<SearchType>("username");
-  const [highlightQuery, setHighlightQuery] = useState("");
+  const [currentType, setCurrentType] = useState<SearchType>("profile");
   const [currentFilters, setCurrentFilters] = useState<Record<string, string>>({});
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const authed = isAuthenticated();
   const { toast } = useToast();
   const pageSize = 25;
-  const maxResults = 100000;
-
-  const unifiedSearch = trpc.search.unified.useQuery;
 
   useEffect(() => {
     const ctx = gsap.context(() => {
@@ -333,87 +378,45 @@ export default function Index() {
   }, []);
 
   useEffect(() => {
-    if (!showResults || !results || results.data.length === 0 || !resultsWrapRef.current) return;
+    if (!showResults || !results || !resultsWrapRef.current) return;
 
     const ctx = gsap.context(() => {
-      const tl = gsap.timeline();
-      tl.set(resultsWrapRef.current, { autoAlpha: 0, height: 0, overflow: "hidden" })
-        .to(resultsWrapRef.current, {
-          autoAlpha: 1,
-          height: "auto",
-          duration: 0.4,
-          ease: "power3.out",
-          onComplete: () => {
-            const cards = resultsWrapRef.current?.querySelectorAll(".result-card");
-            if (cards && cards.length > 0) {
-              gsap.fromTo(
-                cards,
-                { opacity: 0, y: 16, scale: 0.98 },
-                {
-                  opacity: 1,
-                  y: 0,
-                  scale: 1,
-                  duration: 0.55,
-                  ease: "back.out(1.2)",
-                  stagger: { each: 0.07, from: "start" },
-                }
-              );
-            }
-          },
-        });
+      const cards = resultsWrapRef.current?.querySelectorAll(".result-card");
+      if (cards && cards.length > 0) {
+        gsap.fromTo(
+          cards,
+          { opacity: 0, y: 16, scale: 0.98 },
+          {
+            opacity: 1,
+            y: 0,
+            scale: 1,
+            duration: 0.55,
+            ease: "back.out(1.2)",
+            stagger: { each: 0.07, from: "start" },
+          }
+        );
+      }
     }, resultsWrapRef);
 
     return () => ctx.revert();
-  }, [showResults, results]);
+  }, [showResults, results?.data?.length]);
 
   const handleSearch = useCallback(async (query: string, type: SearchType, page = 1, filters: Record<string, string> = {}) => {
     setIsSearching(true);
-    setShowResults(false);
-
     if (page === 1) {
+      setShowResults(false);
       setCurrentQuery(query);
       setCurrentType(type);
       setCurrentFilters(filters);
-      setHighlightQuery(query || filters.username || filters.displayName || filters.channelName || filters.groupName || filters.senderUsername || filters.senderUserId || "");
     }
 
     try {
-      const typeMap: Record<SearchType, "profile" | "channel" | "group" | "message"> = {
-        username: "profile",
-        sound: "channel",
-        people: "group",
-        send: "message",
-      };
+      const payload = buildUnifiedSearchInput(query, type, filters, page, pageSize);
+      const searchData = await trpcClient.search.unified.query(payload) as { results: SearchResult[]; total: number };
+      const nextResults = searchData.results;
 
-      const searchType = typeMap[type];
-      const searchData = await trpcClient.search.unified.query({
-        type: searchType,
-        q: query,
-        filterChatId: filters.chatId || filters.channelId || filters.groupId,
-        filterBucket: filters.bucket,
-        filterSenderId: filters.senderUserId,
-        filterUsername: filters.username || filters.displayName || filters.channelName || filters.groupName || filters.senderUsername,
-        filterDateStart: filters.dateStart,
-        filterDateEnd: filters.dateEnd,
-        filterHasMedia: filters.hasMedia === "true" ? true : filters.hasMedia === "false" ? false : undefined,
-        filterHasLinks: filters.hasLinks === "true" ? true : filters.hasLinks === "false" ? false : undefined,
-        filterMinLength: filters.minLength ? parseInt(filters.minLength) : undefined,
-        page: page,
-        limit: pageSize,
-      });
-
-      const searchResultData = searchData as { results: SearchResult[]; total: number } | null;
-      const searchResult: { results: SearchResult[]; type: string } = {
-        results: (searchResultData?.results || []) as SearchResult[],
-        type: type === "username" ? "Profile" : type === "sound" ? "Channel" : type === "people" ? "Group" : "Message",
-      };
-      setTotalResults(searchResultData?.total || 0);
-
-      if (page === 1) {
-        setResults({ data: searchResult.results, type: searchResult.type });
-      } else {
-        setResults(prev => prev ? { data: [...prev.data, ...searchResult.results], type: searchResult.type } : null);
-      }
+      setTotalResults(searchData.total);
+      setResults({ data: nextResults, type: searchTypeLabelMap[type] });
       setCurrentPage(page);
       setShowResults(true);
     } catch (error: any) {
@@ -439,16 +442,16 @@ export default function Index() {
     } finally {
       setIsSearching(false);
     }
-  }, [toast]);
+  }, [toast, pageSize]);
 
   useEffect(() => {
-    if (!showResults || currentType !== "send" || !sentinelRef.current) return;
+    if (!showResults || currentType !== "message" || !sentinelRef.current) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && !isLoadingMore && results && results.data.length < totalResults) {
           setIsLoadingMore(true);
-          handleSearch(currentQuery, currentType, currentPage + 1, currentFilters);
+          void handleSearch(currentQuery, currentType, currentPage + 1, currentFilters);
         }
       },
       { threshold: 0.1, rootMargin: "100px" }
@@ -456,12 +459,14 @@ export default function Index() {
 
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [showResults, currentType, isLoadingMore, results, totalResults, currentQuery, currentType, currentPage, currentFilters, handleSearch]);
+  }, [showResults, currentType, isLoadingMore, results, totalResults, currentQuery, currentPage, currentFilters, handleSearch]);
 
   useEffect(() => {
     if (!isLoadingMore) return;
     setIsLoadingMore(false);
-  }, [results]);
+  }, [results, isLoadingMore]);
+
+  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
 
   return (
     <div className="min-h-screen bg-[#0F0F11] flex flex-col">
@@ -496,102 +501,80 @@ export default function Index() {
 
         <div className="flex-1 flex flex-col items-center justify-start text-center px-4 sm:px-8 pt-4">
           <p className="text-white/80 text-lg md:text-xl max-w-2xl leading-relaxed mb-8">
-            Get instant results without the grunt work. We automate username verification, breach detection, and log analysis for you.
+            Search Telegram profiles, channels, groups, and stored messages with server-enforced filters, ranking, analytics, and redactions.
           </p>
 
           <div ref={searchWrapRef}>
             <SearchBar onSearch={handleSearch} />
           </div>
 
-          {results && (
+          {showResults && results && (
             <div ref={resultsWrapRef} className="w-full max-w-[827px] mx-auto mt-10 pb-8 text-left">
               <div ref={resultsContainerRef}>
-                {totalResults > 0 && (
-                  <>
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <span className="font-sans font-normal text-[14px] text-white">
-                          {totalResults} Result{totalResults !== 1 ? "s" : ""}
-                        </span>
-                        <div className="flex items-center gap-2 px-3 py-1 rounded-[2px] bg-[rgba(17,16,24,0.3)] border border-[rgba(58,42,238,0.3)] backdrop-blur-[16.5px]">
-                          <span className="font-sans font-normal text-[8px] text-[#3A2AEE] uppercase">
-                            {results.type}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleSearch(currentQuery, currentType, currentPage - 1)}
-                          disabled={currentPage === 1}
-                          className="px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-white/60 text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
-                        >
-                          Prev
-                        </button>
-                        <span className="font-sans text-[12px] text-white/50">
-                          Page {currentPage} of {Math.ceil(totalResults / pageSize)}
-                        </span>
-                        <button
-                          onClick={() => handleSearch(currentQuery, currentType, currentPage + 1)}
-                          disabled={currentPage >= Math.ceil(totalResults / pageSize)}
-                          className="px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-white/60 text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
-                        >
-                          Next
-                        </button>
-                      </div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="font-sans font-normal text-[14px] text-white">
+                      {totalResults} Result{totalResults !== 1 ? "s" : ""}
+                    </span>
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-[2px] bg-[rgba(17,16,24,0.3)] border border-[rgba(58,42,238,0.3)] backdrop-blur-[16.5px]">
+                      <span className="font-sans font-normal text-[8px] text-[#3A2AEE] uppercase">
+                        {results.type}
+                      </span>
                     </div>
-                    <div className="h-px w-full bg-[rgba(255,255,255,0.05)] mb-4" />
-                  </>
-                )}
-
-                <div className="flex flex-col gap-3">
-                  {results.data.map((result, i) => (
-                    <ResultCard key={i} result={result} resultType={results.type} searchQuery={highlightQuery} onNavigate={navigate} />
-                  ))}
-
-                  {currentType === "send" && results.data.length < totalResults && (
-                    <>
-                      <div ref={sentinelRef} className="h-4" />
-                      {isLoadingMore && (
-                        <div className="flex items-center justify-center py-4">
-                          <div className="w-6 h-6 border-2 border-[#3A2AEE] border-t-transparent rounded-full animate-spin" />
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                {currentType !== "send" && totalResults > pageSize && (
-                  <div className="flex items-center justify-center gap-2 mt-6">
+                    {isSearching && (
+                      <div className="w-4 h-4 border-2 border-[#3A2AEE] border-t-transparent rounded-full animate-spin" />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => handleSearch(currentQuery, currentType, currentPage - 1)}
-                      disabled={currentPage === 1}
+                      onClick={() => handleSearch(currentQuery, currentType, currentPage - 1, currentFilters)}
+                      disabled={currentPage === 1 || isSearching}
                       className="px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-white/60 text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
                     >
                       Prev
                     </button>
                     <span className="font-sans text-[12px] text-white/50">
-                      Page {currentPage} of {Math.ceil(totalResults / pageSize)}
+                      Page {currentPage} of {totalPages}
                     </span>
                     <button
-                      onClick={() => handleSearch(currentQuery, currentType, currentPage + 1)}
-                      disabled={currentPage >= Math.ceil(totalResults / pageSize)}
+                      onClick={() => handleSearch(currentQuery, currentType, currentPage + 1, currentFilters)}
+                      disabled={currentPage >= totalPages || isSearching}
                       className="px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-white/60 text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
                     >
                       Next
                     </button>
                   </div>
-                )}
-              </div>
+                </div>
 
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
-                <span className="font-sans text-[11px] text-white/40">
-                  Showing {results.data.length} of {totalResults.toLocaleString()} results
-                </span>
-                {currentType === "send" && results.data.length < totalResults && !isLoadingMore && (
-                  <span className="font-sans text-[11px] text-[#3A2AEE]">
-                    Scroll for more
-                  </span>
+                <div className="h-px w-full bg-[rgba(255,255,255,0.05)] mb-4" />
+
+                {results.data.length === 0 ? (
+                  <div className="rounded-[10px] border border-[rgba(58,42,238,0.18)] bg-[rgba(17,16,24,0.35)] px-5 py-8 text-center">
+                    <p className="font-sans text-[14px] text-white/70">No results matched this search.</p>
+                    <p className="font-sans text-[12px] text-white/35 mt-2">Try a broader query or adjust the advanced filters.</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {results.data.map((result) => (
+                      <ResultCard
+                        key={`${result.resultType}-${result.resultType === "profile" ? result.telegramUserId : result.resultType === "message" ? `${result.chatId}:${result.messageId}` : result.telegramChatId}`}
+                        result={result}
+                        onNavigate={navigate}
+                      />
+                    ))}
+                  </div>
                 )}
+
+                <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
+                  <span className="font-sans text-[11px] text-white/40">
+                    Showing {results.data.length} of {totalResults.toLocaleString()} results
+                  </span>
+                  {currentType === "message" && results.data.length < totalResults && !isLoadingMore && (
+                    <span className="font-sans text-[11px] text-[#3A2AEE]">
+                      Scroll for more
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}

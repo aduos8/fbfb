@@ -1,0 +1,2 @@
+ALTER TABLE redactions
+ADD COLUMN IF NOT EXISTS reason TEXT;

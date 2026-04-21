@@ -16,6 +16,7 @@ export type NotificationType =
   | 'display_name_changed'
   | 'bio_updated'
   | 'profile_photo_changed'
+  | 'phone_changed'
   | 'premium_status_changed'
   | 'credits_low'
   | 'tracking_renewal'
@@ -175,6 +176,27 @@ export async function createPremiumStatusChangeNotification(
   );
 }
 
+export async function createPhoneChangeNotification(
+  userId: string,
+  profileUserId: string,
+  profileUsername: string,
+  oldPhone: string | null,
+  newPhone: string | null
+): Promise<Notification> {
+  return createNotification(
+    userId,
+    'phone_changed',
+    'Phone changed',
+    `Phone value changed on monitored account @${profileUsername}`,
+    {
+      profile_user_id: profileUserId,
+      profile_username: profileUsername,
+      old_value: oldPhone,
+      new_value: newPhone,
+    }
+  );
+}
+
 export async function createCreditsLowNotification(
   userId: string,
   creditsBalance: number
@@ -203,6 +225,25 @@ export async function createTrackingRenewalNotification(
     {
       profile_username: profileUsername,
       renewal_days: days,
+    }
+  );
+}
+
+export async function createTrackingExpiredNotification(
+  userId: string,
+  profileUsername: string | null,
+  reason: string
+): Promise<Notification> {
+  return createNotification(
+    userId,
+    'tracking_expired',
+    'Tracking paused',
+    profileUsername
+      ? `Tracking for @${profileUsername} was paused. ${reason}`
+      : `Tracking was paused. ${reason}`,
+    {
+      profile_username: profileUsername ?? undefined,
+      reason,
     }
   );
 }

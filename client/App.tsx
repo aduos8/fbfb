@@ -21,11 +21,13 @@ import Verify2FA from "./pages/Verify2FA";
 import ProfileLookup from "./pages/ProfileLookup";
 import ChannelLookup from "./pages/ChannelLookup";
 import GroupLookup from "./pages/GroupLookup";
+import MessageLookup from "./pages/MessageLookup";
 import Dashboard from "./pages/Dashboard";
 import AccountSettings from "./pages/AccountSettings";
 import Credits from "./pages/Credits";
 import Purchases from "./pages/Purchases";
 import Vouchers from "./pages/Vouchers";
+import Tracking from "./pages/Tracking";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import AdminRoute from "@/components/AdminRoute";
 import AdminLayout from "./pages/admin/AdminLayout";
@@ -37,6 +39,7 @@ import AdminPurchases from "./pages/admin/AdminPurchases";
 import AdminAuditLogs from "./pages/admin/AdminAuditLogs";
 import AdminRedactions from "./pages/admin/AdminRedactions";
 import Notifications from "./pages/Notifications";
+import TrackingCreditsBanner from "./components/TrackingCreditsBanner";
 
 const queryClient = new QueryClient();
 
@@ -80,6 +83,12 @@ const NoiseOverlay = () =>
     document.body
   );
 
+const CreditsBanner = () =>
+  createPortal(
+    <TrackingCreditsBanner />,
+    document.body
+  );
+
 const App = () => (
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>
@@ -87,6 +96,7 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
+          <CreditsBanner />
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/insights" element={<Placeholder />} />
@@ -118,6 +128,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Credits />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/tracking"
+              element={
+                <ProtectedRoute>
+                  <Tracking />
                 </ProtectedRoute>
               }
             />
@@ -168,6 +186,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <GroupLookup />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/lookup/message/:chatId/:messageId"
+              element={
+                <ProtectedRoute>
+                  <MessageLookup />
                 </ProtectedRoute>
               }
             />

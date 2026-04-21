@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { createServer, closeConnection } from "./index";
 
@@ -6,7 +7,7 @@ const server = createServer();
 
 const port = process.env.PORT || 3000;
 
-const __dirname = import.meta.dirname;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.join(__dirname, "../spa");
 
 server.use(express.static(distPath));

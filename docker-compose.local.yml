@@ -1,0 +1,94 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: "3000"
+      NODE_ENV: "production"
+      POSTGRES_URL: "postgresql://tgosint:tgosint_local@postgres:5432/tgosint"
+      CASSANDRA_CONTACT_POINTS: "cassandra"
+      CASSANDRA_LOCAL_DC: "datacenter1"
+      CASSANDRA_KEYSPACE: "tgosint"
+      CASSANDRA_USERNAME: "cassandra"
+      CASSANDRA_PASSWORD: "cassandra"
+      MEILISEARCH_URL: "http://meilisearch:7700"
+      MEILISEARCH_API_KEY: "local_meili_master_key_change_me"
+      JWT_SECRET: "local_dev_jwt_secret_change_me"
+      PUBLIC_URL: "http://localhost:3000"
+      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      STORAGE_BASE_URL: "http://localhost:3000/api/assets"
+      RUN_DB_MIGRATIONS: "true"
+      RUN_CASSANDRA_INIT: "true"
+      RUN_SEARCH_REINDEX_ON_BOOT: "false"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: "tgosint"
+      POSTGRES_USER: "tgosint"
+      POSTGRES_PASSWORD: "tgosint_local"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tgosint -d tgosint"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_CLUSTER_NAME: "tgosint-local"
+      CASSANDRA_DC: "datacenter1"
+      CASSANDRA_RACK: "rack1"
+      MAX_HEAP_SIZE: "1G"
+      HEAP_NEWSIZE: "256m"
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    environment:
+      MEILI_MASTER_KEY: "local_meili_master_key_change_me"
+      MEILI_ENV: "production"
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health | grep -q 'available'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres_data:
+  cassandra_data:
+  meilisearch_data:

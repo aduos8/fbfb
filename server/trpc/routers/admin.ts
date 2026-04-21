@@ -1,6 +1,14 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { sql } from "../../lib/db";
+import {
+  CANONICAL_REDACTION_FIELDS,
+  listRedactionsByType,
+  removeRedactionByTarget,
+  upsertRedaction,
+  deactivateRedaction,
+  reactivateRedaction,
+} from "../../lib/db/redactions";
 import type { Context } from "../context";
 
 const t = initTRPC.context<Context>().create();
@@ -623,35 +631,7 @@ export const adminRouter = t.router({
     list: adminProcedure
       .input(z.object({ entityType: z.enum(["user", "channel", "group"]).optional() }))
       .query(async ({ input }) => {
-        let redactions;
-        if (input?.entityType) {
-          redactions = await sql<{
-            id: string;
-            target_type: string;
-            target_id: string;
-            redaction_type: string;
-            redacted_fields: string[];
-            created_by: string;
-            created_at: Date;
-          }[]>`
-            SELECT * FROM redactions
-            WHERE target_type = ${input.entityType}
-            ORDER BY created_at DESC
-          `;
-        } else {
-          redactions = await sql<{
-            id: string;
-            target_type: string;
-            target_id: string;
-            redaction_type: string;
-            redacted_fields: string[];
-            created_by: string;
-            created_at: Date;
-          }[]>`
-            SELECT * FROM redactions
-            ORDER BY created_at DESC
-          `;
-        }
+        const redactions = await listRedactionsByType(input?.entityType);
 
         return {
           redactions: redactions.map((r) => ({
@@ -660,8 +640,9 @@ export const adminRouter = t.router({
             entity_id: r.target_id,
             redaction_type: r.redaction_type,
             fields: r.redacted_fields,
-            reason: r.redacted_fields.join(", "),
+            reason: r.reason,
             created_at: r.created_at.toISOString(),
+            is_active: r.is_active ?? true,
           })),
         };
       }),
@@ -673,26 +654,33 @@ export const adminRouter = t.router({
         reason: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const [existing] = await sql`SELECT id FROM redactions WHERE target_type = ${input.entityType} AND target_id = ${input.entityId}`;
+        await upsertRedaction({
+          targetType: input.entityType,
+          targetId: input.entityId,
+          redactionType: "full",
+          redactedFields: [...CANONICAL_REDACTION_FIELDS],
+          reason: input.reason,
+          actorId: ctx.userId,
+        });
 
-        if (existing) {
-          await sql`
-            UPDATE redactions SET redaction_type = 'full', redacted_fields = ARRAY['username', 'display_name', 'bio', 'avatar_url']
-            WHERE target_type = ${input.entityType} AND target_id = ${input.entityId}
-          `;
-        } else {
-          await sql`
-            INSERT INTO redactions (target_type, target_id, redaction_type, redacted_fields, created_by)
-            VALUES (${input.entityType}, ${input.entityId}, 'full',
-                    ARRAY['username', 'display_name', 'bio', 'avatar_url'], ${ctx.userId})
-          `;
-        }
+        return { ok: true };
+      }),
 
-        await sql`
-          INSERT INTO audit_logs (admin_id, action, target_type, target_id, after_value)
-          VALUES (${ctx.userId}, 'full_redact', ${input.entityType}, ${input.entityId},
-                  ${JSON.stringify({ reason: input.reason })}::jsonb)
-        `;
+    maskedRedact: adminProcedure
+      .input(z.object({
+        entityType: z.enum(["user", "channel", "group"]),
+        entityId: z.string(),
+        reason: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await upsertRedaction({
+          targetType: input.entityType,
+          targetId: input.entityId,
+          redactionType: "masked",
+          redactedFields: [...CANONICAL_REDACTION_FIELDS],
+          reason: input.reason,
+          actorId: ctx.userId,
+        });
 
         return { ok: true };
       }),
@@ -705,25 +693,14 @@ export const adminRouter = t.router({
         reason: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const [existing] = await sql`SELECT id FROM redactions WHERE target_type = ${input.entityType} AND target_id = ${input.entityId}`;
-
-        if (existing) {
-          await sql`
-            UPDATE redactions SET redaction_type = 'partial', redacted_fields = ${input.fields}
-            WHERE target_type = ${input.entityType} AND target_id = ${input.entityId}
-          `;
-        } else {
-          await sql`
-            INSERT INTO redactions (target_type, target_id, redaction_type, redacted_fields, created_by)
-            VALUES (${input.entityType}, ${input.entityId}, 'partial', ${input.fields}, ${ctx.userId})
-          `;
-        }
-
-        await sql`
-          INSERT INTO audit_logs (admin_id, action, target_type, target_id, after_value)
-          VALUES (${ctx.userId}, 'partial_redact', ${input.entityType}, ${input.entityId},
-                  ${JSON.stringify({ fields: input.fields, reason: input.reason })}::jsonb)
-        `;
+        await upsertRedaction({
+          targetType: input.entityType,
+          targetId: input.entityId,
+          redactionType: "partial",
+          redactedFields: input.fields,
+          reason: input.reason,
+          actorId: ctx.userId,
+        });
 
         return { ok: true };
       }),
@@ -734,13 +711,32 @@ export const adminRouter = t.router({
         entityId: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        await sql`DELETE FROM redactions WHERE target_type = ${input.entityType} AND target_id = ${input.entityId}`;
+        await removeRedactionByTarget({
+          targetType: input.entityType,
+          targetId: input.entityId,
+          actorId: ctx.userId,
+        });
 
-        await sql`
-          INSERT INTO audit_logs (admin_id, action, target_type, target_id)
-          VALUES (${ctx.userId}, 'redaction_remove', ${input.entityType}, ${input.entityId})
-        `;
+        return { ok: true };
+      }),
 
+    deactivate: adminProcedure
+      .input(z.object({
+        entityType: z.enum(["user", "channel", "group"]),
+        entityId: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await deactivateRedaction(input.entityType, input.entityId, ctx.userId);
+        return { ok: true };
+      }),
+
+    reactivate: adminProcedure
+      .input(z.object({
+        entityType: z.enum(["user", "channel", "group"]),
+        entityId: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await reactivateRedaction(input.entityType, input.entityId, ctx.userId);
         return { ok: true };
       }),
   }),

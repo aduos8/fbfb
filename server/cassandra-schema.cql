@@ -1,6 +1,7 @@
 -- TG OSINT Platform: Cassandra Schema
 -- Run with: cqlsh -u cassandra -p cassandra -f cassandra-schema.cql
--- Requires SASI indexes: set sasi_indexes_enabled: true in cassandra.yaml
+-- Fuzzy/ranked search is handled by Meilisearch. Cassandra remains the source
+-- of truth for entities, messages, histories, and analytics tables.
 
 CREATE KEYSPACE IF NOT EXISTS tgosint
 WITH replication = {
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name text,
   bio text,
   avatar_url text,
+  photo_id text,
   phone_number text,
   created_at timestamp,
   updated_at timestamp
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS chats (
   username text,
   display_name text,
   member_count int,
+  participants_count int,
   bio text,
   avatar_url text,
   created_at timestamp,
@@ -179,47 +182,9 @@ CREATE TABLE IF NOT EXISTS avatar_queue (
   created_at timestamp
 );
 
--- ============================================
--- SASI INDEXES FOR TEXT SEARCH (CONTAINS mode)
--- Requires: sasi_indexes_enabled: true in cassandra.yaml
--- ============================================
-
-CREATE CUSTOM INDEX IF NOT EXISTS users_username_idx ON users (username)
-  USING 'org.apache.cassandra.index.sasi.SASIIndex'
-  WITH OPTIONS = {
-    'mode': 'CONTAINS',
-    'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.NonTokenizingAnalyzer'
-  };
-
-CREATE CUSTOM INDEX IF NOT EXISTS users_display_name_idx ON users (display_name)
-  USING 'org.apache.cassandra.index.sasi.SASIIndex'
-  WITH OPTIONS = {
-    'mode': 'CONTAINS',
-    'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.NonTokenizingAnalyzer'
-  };
-
-CREATE CUSTOM INDEX IF NOT EXISTS chats_display_name_idx ON chats (display_name)
-  USING 'org.apache.cassandra.index.sasi.SASIIndex'
-  WITH OPTIONS = {
-    'mode': 'CONTAINS',
-    'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.NonTokenizingAnalyzer'
-  };
-
-CREATE CUSTOM INDEX IF NOT EXISTS chats_username_idx ON chats (username)
-  USING 'org.apache.cassandra.index.sasi.SASIIndex'
-  WITH OPTIONS = {
-    'mode': 'CONTAINS',
-    'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.NonTokenizingAnalyzer'
-  };
-
-CREATE CUSTOM INDEX IF NOT EXISTS messages_by_id_content_idx ON messages_by_id (content)
-  USING 'org.apache.cassandra.index.sasi.SASIIndex'
-  WITH OPTIONS = {
-    'mode': 'CONTAINS',
-    'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.NonTokenizingAnalyzer'
-  };
-
 -- Standard secondary indexes for exact matches
 CREATE INDEX IF NOT EXISTS idx_avatar_queue_status ON avatar_queue(status);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_phone_number ON users(phone_number);
+CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
 CREATE INDEX IF NOT EXISTS idx_chats_username ON chats(username);

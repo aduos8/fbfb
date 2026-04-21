@@ -8,41 +8,51 @@ interface FilterModalProps {
   onClose: () => void;
 }
 
-const filterConfigs: Record<string, { label: string; placeholder: string; key: string; hint?: string }[]> = {
-  username: [
+type FilterConfig = {
+  label: string;
+  placeholder: string;
+  key: string;
+  hint?: string;
+  section?: "primary" | "additional";
+};
+
+const filterConfigs: Record<string, FilterConfig[]> = {
+  profile: [
     { label: "Username", placeholder: "Exact or partial", key: "username", hint: "e.g. johndoe or john" },
-    { label: "Display Name", placeholder: "Exact or partial", key: "displayName", hint: "e.g. John Doe" },
-    { label: "Phone", placeholder: "+1 555 000 0000", key: "phone" },
+    { label: "Display Name", placeholder: "Exact or partial", key: "display_name", hint: "e.g. John Doe" },
+    { label: "Number", placeholder: "+1 555 000 0000", key: "number" },
     { label: "Bio Keyword", placeholder: "Any keyword in bio", key: "bio" },
-    { label: "User ID", placeholder: "Numeric user ID", key: "userId" },
+    { label: "User ID", placeholder: "Numeric user ID", key: "user_id" },
   ],
-  sound: [
-    { label: "Channel Name", placeholder: "Exact or partial", key: "channelName", hint: "e.g. tech talk" },
-    { label: "Channel ID", placeholder: "Numeric channel ID", key: "channelId" },
-    { label: "Description", placeholder: "Any keyword", key: "description" },
+  channel: [
+    { label: "Username", placeholder: "@handle or partial", key: "username", hint: "e.g. technews" },
+    { label: "Display Name", placeholder: "Exact or partial", key: "display_name", hint: "e.g. Tech Talk Daily" },
+    { label: "Chat ID", placeholder: "Numeric channel ID", key: "chat_id" },
+    { label: "Bio", placeholder: "Any keyword", key: "bio" },
   ],
-  people: [
-    { label: "Group Name", placeholder: "Exact or partial", key: "groupName", hint: "e.g. crypto traders" },
-    { label: "Group ID", placeholder: "Numeric group ID", key: "groupId" },
-    { label: "Description", placeholder: "Any keyword", key: "groupDesc" },
+  group: [
+    { label: "Username", placeholder: "@handle or partial", key: "username", hint: "Public groups only" },
+    { label: "Display Name", placeholder: "Exact or partial", key: "display_name", hint: "e.g. crypto traders" },
+    { label: "Chat ID", placeholder: "Numeric group ID", key: "chat_id" },
+    { label: "Bio", placeholder: "Any keyword", key: "bio" },
   ],
-  send: [
-    { label: "Sender Username", placeholder: "Exact or partial", key: "senderUsername" },
-    { label: "Sender User ID", placeholder: "Numeric user ID", key: "senderUserId" },
-    { label: "Chat ID", placeholder: "Numeric chat ID", key: "chatId" },
-    { label: "Date From", placeholder: "YYYY-MM-DD", key: "dateStart" },
-    { label: "Date To", placeholder: "YYYY-MM-DD", key: "dateEnd" },
-    { label: "Has Media", placeholder: "true / false", key: "hasMedia" },
-    { label: "Has Links", placeholder: "true / false", key: "hasLinks" },
-    { label: "Min Length", placeholder: "Minimum message length", key: "minLength" },
+  message: [
+    { label: "Username", placeholder: "Exact or partial", key: "username", section: "primary" },
+    { label: "User ID", placeholder: "Numeric user ID", key: "user_id", section: "primary" },
+    { label: "Chat ID", placeholder: "Numeric chat ID", key: "chat_id", section: "primary" },
+    { label: "Date From", placeholder: "YYYY-MM-DD", key: "dateStart", section: "additional" },
+    { label: "Date To", placeholder: "YYYY-MM-DD", key: "dateEnd", section: "additional" },
+    { label: "Has Media", placeholder: "true / false", key: "hasMedia", section: "additional" },
+    { label: "Contains Links", placeholder: "true / false", key: "containsLinks", section: "additional" },
+    { label: "Min Length", placeholder: "Minimum message length", key: "minLength", section: "additional" },
   ],
 };
 
 const searchTypeLabels: Record<string, string> = {
-  username: "Username Search",
-  sound: "Channel Search",
-  people: "Groups Search",
-  send: "Messages Search",
+  profile: "Profile Search",
+  channel: "Channel Search",
+  group: "Group Search",
+  message: "Message Search",
 };
 
 function FilterField({
@@ -50,7 +60,7 @@ function FilterField({
   value,
   onChange,
 }: {
-  config: (typeof filterConfigs)[string][number];
+  config: FilterConfig;
   value: string;
   onChange: (key: string, val: string) => void;
 }) {
@@ -92,6 +102,8 @@ export default function FilterModal({ searchType, filters, onFiltersChange, onCl
   const scrollYRef = useRef<number>(0);
 
   const configs = filterConfigs[searchType] || [];
+  const primaryConfigs = configs.filter((config) => config.section !== "additional");
+  const additionalConfigs = configs.filter((config) => config.section === "additional");
 
   useEffect(() => {
     scrollYRef.current = window.scrollY;
@@ -199,7 +211,7 @@ export default function FilterModal({ searchType, filters, onFiltersChange, onCl
         </div>
 
         <div className="px-5 pt-3 pb-3 flex flex-col gap-2.5">
-          {configs.map((config) => (
+          {primaryConfigs.map((config) => (
             <FilterField
               key={config.key}
               config={config}
@@ -207,6 +219,23 @@ export default function FilterModal({ searchType, filters, onFiltersChange, onCl
               onChange={handleChange}
             />
           ))}
+
+          {additionalConfigs.length > 0 && (
+            <>
+              <div className="pt-2">
+                <p className="text-[11px] text-white/35 font-sans uppercase tracking-[0.08em]">Additional Filters</p>
+                <p className="text-[10px] text-white/25 font-sans mt-1">Optional advanced filters beyond the base spec contract.</p>
+              </div>
+              {additionalConfigs.map((config) => (
+                <FilterField
+                  key={config.key}
+                  config={config}
+                  value={localFilters[config.key] || ""}
+                  onChange={handleChange}
+                />
+              ))}
+            </>
+          )}
         </div>
 
         <div

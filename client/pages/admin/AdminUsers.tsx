@@ -3,7 +3,60 @@ import { createPortal } from "react-dom";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Search, Ban, UserX, Eye, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { Search, Ban, UserX, Eye, ChevronLeft, ChevronRight, RefreshCw, ChevronDown } from "lucide-react";
+
+function StatusDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const options = [
+    { value: "all", label: "All Users" },
+    { value: "active", label: "Active" },
+    { value: "suspended", label: "Suspended" },
+    { value: "banned", label: "Banned" },
+  ];
+
+  const selectedLabel = options.find(o => o.value === value)?.label || "All Users";
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-3 bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] h-[48px] px-4 font-sans text-[13px] text-white/80 hover:border-[rgba(58,42,238,0.4)] transition-colors cursor-pointer"
+      >
+        <span>{selectedLabel}</span>
+        <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-2 w-full min-w-[160px] rounded-[8px] overflow-hidden z-50" style={{ background: "#1a1a1f", border: "1px solid rgba(58,42,238,0.3)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full px-4 py-2.5 text-left font-sans text-[13px] transition-colors cursor-pointer ${
+                opt.value === value ? "text-white bg-[rgba(58,42,238,0.15)]" : "text-white/70 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function AdminUsers() {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -95,16 +148,10 @@ export default function AdminUsers() {
             className="w-full bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] h-[48px] pl-14 pr-4 outline-none font-sans text-[13px] text-white/80 placeholder:text-white/30 input-glow"
           />
         </div>
-        <select
+        <StatusDropdown
           value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value as any); setPage(0); }}
-          className="bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] h-[48px] px-5 font-sans text-[13px] text-white/80 outline-none cursor-pointer input-glow"
-        >
-          <option value="all">All Users</option>
-          <option value="active">Active</option>
-          <option value="suspended">Suspended</option>
-          <option value="banned">Banned</option>
-        </select>
+          onChange={(v) => { setStatusFilter(v as any); setPage(0); }}
+        />
       </div>
 
       <div className="card-border-gradient rounded-[20px] overflow-hidden">

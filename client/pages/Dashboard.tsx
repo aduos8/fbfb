@@ -4,6 +4,7 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { Link } from "react-router-dom";
+import type { TrackingRecord } from "@shared/api";
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, CreditCard, Search, ShoppingBag, Settings2, Activity } from "lucide-react";
 
@@ -17,9 +18,11 @@ export default function Dashboard() {
   const { data: balance } = trpc.account.getBalance.useQuery();
   const { data: summary } = trpc.credits.getSummary.useQuery();
   const { data: recentTransactions } = trpc.credits.getTransactions.useQuery({ limit: 5 });
+  const { data: trackingData } = trpc.tracking.list.useQuery();
 
   const profileData = profile?.profile as any;
   const txns = (recentTransactions?.transactions || []) as any[];
+  const trackedProfiles = ((trackingData as { trackings?: TrackingRecord[] } | undefined)?.trackings ?? []).length;
 
   useEffect(() => {
     const ctx = gsap.context(() => {
@@ -79,7 +82,7 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Tracked</span>
-                  <span className="font-sans font-bold text-white text-[28px]">0</span>
+                  <span className="font-sans font-bold text-white text-[28px]">{trackedProfiles}</span>
                 </div>
               </div>
             </div>
@@ -150,6 +153,17 @@ export default function Dashboard() {
                     <div className="flex-1">
                       <span className="font-sans font-medium text-[13px] md:text-[14px] text-white">Credits</span>
                       <p className="font-sans font-normal text-[11px] text-white/40">Top up or view transactions</p>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-white/30 group-hover:text-[#3A2AEE] transition-colors" />
+                  </Link>
+                  <Link
+                    to="/tracking"
+                    className="flex items-center gap-4 p-4 rounded-[12px] group transition-all duration-200 hover:bg-white/[0.02] border border-transparent hover:border-white/[0.05]"
+                  >
+                    <Activity className="w-5 h-5 text-[#3A2AEE]" />
+                    <div className="flex-1">
+                      <span className="font-sans font-medium text-[13px] md:text-[14px] text-white">Tracking</span>
+                      <p className="font-sans font-normal text-[11px] text-white/40">Manage monitored profiles and renewals</p>
                     </div>
                     <ArrowRight className="w-4 h-4 text-white/30 group-hover:text-[#3A2AEE] transition-colors" />
                   </Link>

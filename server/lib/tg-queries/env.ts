@@ -31,7 +31,7 @@ export function readEnv(source: Record<string, string | undefined> = process.env
     API_BASE_URL: source.API_BASE_URL ?? "http://localhost:3000/api",
     CASSANDRA_CONTACT_POINTS: source.CASSANDRA_CONTACT_POINTS ?? "127.0.0.1",
     CASSANDRA_LOCAL_DC: source.CASSANDRA_LOCAL_DC ?? "datacenter1",
-    CASSANDRA_KEYSPACE: source.CASSANDRA_KEYSPACE ?? "tg_osint",
+    CASSANDRA_KEYSPACE: source.CASSANDRA_KEYSPACE ?? "tgosint",
     CASSANDRA_USERNAME: source.CASSANDRA_USERNAME ?? "",
     CASSANDRA_PASSWORD: source.CASSANDRA_PASSWORD ?? "",
     POSTGRES_URL: source.POSTGRES_URL ?? "",

@@ -76,6 +76,7 @@ export const notificationsRouter = t.router({
           'display_name_changed',
           'bio_updated',
           'profile_photo_changed',
+          'phone_changed',
           'premium_status_changed',
           'credits_low',
           'tracking_renewal',

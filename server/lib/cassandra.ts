@@ -35,10 +35,12 @@ export async function getUserById(userId: string) {
     display_name: string;
     bio: string;
     avatar_url: string;
+    photo_id: string;
     phone_number: string;
     created_at: Date;
+    updated_at: Date;
   }>(
-    "SELECT user_id, username, display_name, bio, avatar_url, phone_number, created_at FROM users WHERE user_id = ?",
+    "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE user_id = ?",
     [userId]
   );
 
@@ -51,7 +53,7 @@ export async function getUserById(userId: string) {
     new_value: string;
     changed_at: Date;
   }>(
-    "SELECT field, new_value, changed_at FROM user_history WHERE user_id = ?",
+    "SELECT field, new_value, changed_at FROM user_history WHERE user_id = ? ORDER BY changed_at DESC",
     [userId]
   );
 
@@ -81,7 +83,28 @@ export async function getUserById(userId: string) {
     user.bio = latestBio;
   }
 
+  const historyMap = getUserHistoryMapFromRows(historyRows);
+  const usernamesField = historyMap["usernames"];
+  if (usernamesField) {
+    try {
+      const usernames = JSON.parse(usernamesField);
+      (user as any).username = Array.isArray(usernames) ? usernames[usernames.length - 1] : usernamesField;
+    } catch {
+      (user as any).username = usernamesField;
+    }
+  }
+
   return user;
+}
+
+function getUserHistoryMapFromRows(rows: { field: string; new_value: string; changed_at: Date }[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const row of rows) {
+    if (!(row.field in map)) {
+      map[row.field] = row.new_value;
+    }
+  }
+  return map;
 }
 
 interface UserHistoryEntry {
@@ -92,7 +115,7 @@ interface UserHistoryEntry {
 
 async function getUserHistoryMap(userId: string): Promise<Record<string, string>> {
   const rows = await queryCassandra<UserHistoryEntry>(
-    "SELECT field, new_value, changed_at FROM user_history WHERE user_id = ?",
+    "SELECT field, new_value, changed_at FROM user_history WHERE user_id = ? ORDER BY changed_at DESC",
     [userId]
   );
   const map: Record<string, string> = {};
@@ -133,11 +156,11 @@ export async function searchUsersByUsername(query: string, limit = 100000, filte
   if (query) {
     const likeQuery = `%${query.toLowerCase()}%`;
     const usernameRows = await queryCassandra<any>(
-      "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE username LIKE ? LIMIT ? ALLOW FILTERING",
+      "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE username LIKE ? LIMIT ? ALLOW FILTERING",
       [likeQuery, limit]
     );
     const displayNameRows = await queryCassandra<any>(
-      "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE display_name LIKE ? LIMIT ? ALLOW FILTERING",
+      "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE display_name LIKE ? LIMIT ? ALLOW FILTERING",
       [likeQuery, limit]
     );
     allRows.push(...usernameRows, ...displayNameRows);
@@ -145,7 +168,7 @@ export async function searchUsersByUsername(query: string, limit = 100000, filte
 
   if (filters?.userId) {
     const userIdRows = await queryCassandra<any>(
-      "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE user_id = ? LIMIT ?",
+      "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE user_id = ? LIMIT ?",
       [filters.userId, limit]
     );
     allRows.push(...userIdRows);
@@ -153,7 +176,7 @@ export async function searchUsersByUsername(query: string, limit = 100000, filte
 
   if (filters?.username && filters.username !== query) {
     const usernameFilterRows = await queryCassandra<any>(
-      "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE username LIKE ? LIMIT ? ALLOW FILTERING",
+      "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE username LIKE ? LIMIT ? ALLOW FILTERING",
       [`%${filters.username.toLowerCase()}%`, limit]
     );
     allRows.push(...usernameFilterRows);
@@ -161,7 +184,7 @@ export async function searchUsersByUsername(query: string, limit = 100000, filte
 
   if (filters?.displayName && filters.displayName !== query) {
     const displayNameFilterRows = await queryCassandra<any>(
-      "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE display_name LIKE ? LIMIT ? ALLOW FILTERING",
+      "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE display_name LIKE ? LIMIT ? ALLOW FILTERING",
       [`%${filters.displayName.toLowerCase()}%`, limit]
     );
     allRows.push(...displayNameFilterRows);
@@ -211,11 +234,20 @@ export async function searchUsersByUsername(query: string, limit = 100000, filte
     const historyMap = historyByUser[user.user_id] || {};
     const bioEntry = historyMap["bio"];
     const displayNameEntry = historyMap["display_name"];
+    const usernameEntry = historyMap["usernames"];
     if (bioEntry) {
       (user as any).bio = bioEntry.value;
     }
     if (displayNameEntry) {
       (user as any).display_name = displayNameEntry.value;
+    }
+    if (usernameEntry) {
+      try {
+        const usernames = JSON.parse(usernameEntry.value);
+        (user as any).username = Array.isArray(usernames) ? usernames[usernames.length - 1] : usernames;
+      } catch {
+        (user as any).username = usernameEntry.value;
+      }
     }
   }
 
@@ -231,8 +263,12 @@ export async function searchUsersByDisplayName(query: string, limit = 100000) {
     display_name: string;
     bio: string;
     avatar_url: string;
+    photo_id: string;
+    phone_number: string;
+    created_at: Date;
+    updated_at: Date;
   }>(
-    "SELECT user_id, username, display_name, bio, avatar_url FROM users WHERE display_name LIKE ? LIMIT 100000 ALLOW FILTERING",
+    "SELECT user_id, username, display_name, bio, avatar_url, photo_id, phone_number, created_at, updated_at FROM users WHERE display_name LIKE ? LIMIT 100000 ALLOW FILTERING",
     [likeQuery]
   );
   return rows;

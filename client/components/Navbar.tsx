@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
 import { isAuthenticated, clearToken, isAdmin } from "@/lib/auth";
-import { ChevronDown, LogOut, User, CreditCard, ShoppingBag, Coins, Bell, RefreshCw, Tag, LayoutDashboard } from "lucide-react";
+import { ChevronDown, LogOut, User, CreditCard, ShoppingBag, Coins, Bell, Tag, Activity } from "lucide-react";
 
 export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -62,6 +62,9 @@ export default function Navbar() {
             </Link>
             <Link to="/dashboard" className={navLinkClass("/dashboard")}>
               Dashboard
+            </Link>
+            <Link to="/tracking" className={navLinkClass("/tracking")}>
+              Tracking
             </Link>
             <Link to="/pricing" className={navLinkClass("/pricing")}>
               Pricing
@@ -141,6 +144,14 @@ export default function Navbar() {
                   >
                     <ShoppingBag className="w-3.5 h-3.5 text-white/60" />
                     Purchases
+                  </Link>
+                  <Link
+                    to="/tracking"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex items-center gap-2.5 px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer"
+                  >
+                    <Activity className="w-3.5 h-3.5 text-white/60" />
+                    Tracking
                   </Link>
                   <Link
                     to="/notifications"

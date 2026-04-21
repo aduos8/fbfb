@@ -98,6 +98,29 @@ CREATE TABLE IF NOT EXISTS vouchers (
 
 CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(code);
 
+-- Profile tracking table
+CREATE TABLE IF NOT EXISTS profile_tracking (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  profile_user_id TEXT NOT NULL,
+  profile_username TEXT,
+  profile_display_name TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'cancelled')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_renewal_at TIMESTAMPTZ DEFAULT NOW(),
+  cost_per_month INT NOT NULL DEFAULT 1,
+  observed_profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_checked_at TIMESTAMPTZ,
+  last_detected_change_at TIMESTAMPTZ,
+  last_history_check_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_profile_tracking_user_id ON profile_tracking(user_id);
+CREATE INDEX IF NOT EXISTS idx_profile_tracking_status ON profile_tracking(status);
+CREATE INDEX IF NOT EXISTS idx_profile_tracking_renewal ON profile_tracking(status, last_renewal_at) WHERE status = 'active';
+ALTER TABLE profile_tracking ADD COLUMN IF NOT EXISTS last_history_check_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_profile_tracking_history_check ON profile_tracking(status, last_history_check_at) WHERE status IN ('active', 'paused');
+
 -- Voucher redemptions
 CREATE TABLE IF NOT EXISTS voucher_redemptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

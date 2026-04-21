@@ -80,8 +80,9 @@ CREATE TABLE IF NOT EXISTS redactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   target_type TEXT NOT NULL CHECK (target_type IN ('user', 'channel', 'group')),
   target_id TEXT NOT NULL,
-  redaction_type TEXT NOT NULL CHECK (redaction_type IN ('full', 'partial')),
+  redaction_type TEXT NOT NULL CHECK (redaction_type IN ('full', 'partial', 'masked')),
   redacted_fields TEXT[] DEFAULT '{}',
+  reason TEXT,
   created_by UUID NOT NULL REFERENCES users(id),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(target_type, target_id)

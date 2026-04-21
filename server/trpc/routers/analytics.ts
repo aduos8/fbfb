@@ -1,9 +1,17 @@
 import { router } from "../init";
 import { z } from "zod";
-import { getCassandraClient, getUserWordStats, getChatWordStats, getParticipationMetaByUser } from "../../lib/tg-queries/queries";
-import { searchModeProcedure, getSearchViewerRole } from "../../lib/tg-queries/searchModeProcedure";
-
-const cassandra = () => getCassandraClient();
+import { UserAnalyticsSchema } from "../../../shared/api";
+import {
+  getChatById,
+  getChatWordStats,
+  getParticipationByUser,
+  getParticipationMetaByUser,
+  getUserWordStats,
+  listChatsByIds,
+} from "../../lib/tg-queries/queries";
+import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
+import { getViewerAccess } from "../../lib/tg-queries/viewer";
+import { loadSingleRedaction } from "../../lib/tg-queries/redactions";
 
 const STOP_WORDS = new Set([
   "the", "and", "is", "in", "it", "to", "of", "a", "an", "for", "on", "with",
@@ -15,6 +23,11 @@ const STOP_WORDS = new Set([
   "than", "too", "very", "just", "about", "up", "out", "no", "yes", "all",
 ]);
 
+function currentBucket() {
+  const now = new Date();
+  return `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 function filterTopWords(rows: Array<{ word: string; count: number }>) {
   return rows
     .filter((row) => row.word && !STOP_WORDS.has(row.word.toLowerCase()))
@@ -22,83 +35,115 @@ function filterTopWords(rows: Array<{ word: string; count: number }>) {
     .slice(0, 50);
 }
 
-const MOCK_USER_ANALYTICS: Record<string, { activeChats: { chat_id: string; first_message_at: string; last_message_at: string }[]; frequentWords: { word: string; count: number }[] }> = {
-  "1234567890": {
-    activeChats: [
-      { chat_id: "9876543210", first_message_at: "2024-01-15T10:00:00Z", last_message_at: "2024-04-19T15:30:00Z" },
-      { chat_id: "5555555555", first_message_at: "2024-02-20T08:00:00Z", last_message_at: "2024-04-18T20:45:00Z" },
-    ],
-    frequentWords: [
-      { word: "react", count: 245 },
-      { word: "typescript", count: 189 },
-      { word: "github", count: 156 },
-      { word: "api", count: 134 },
-      { word: "docker", count: 98 },
-      { word: "kubernetes", count: 87 },
-      { word: "graphql", count: 76 },
-      { word: "nodejs", count: 65 },
-    ],
-  },
-};
+async function buildUserAnalyticsData(
+  userId: string,
+  viewerUserId: string | null,
+  viewerRole: string | null,
+  bucket?: string,
+) {
+  const viewer = await getViewerAccess({ userId: viewerUserId, role: viewerRole });
+  const userRedaction = await loadSingleRedaction("user", userId);
+  if (userRedaction?.type === "full" && !viewer.canBypassRedactions) {
+    return {
+      userId: null,
+      bucket: bucket ?? currentBucket(),
+      activeChats: [],
+      frequentWords: [],
+      groups: [],
+      channels: [],
+    };
+  }
 
-const MOCK_CHAT_ANALYTICS: Record<string, { topWords: { word: string; count: number }[] }> = {
-  "9876543210": {
-    topWords: [
-      { word: "ai", count: 1234 },
-      { word: "tech", count: 987 },
-      { word: "google", count: 876 },
-      { word: "apple", count: 765 },
-      { word: "microsoft", count: 654 },
-      { word: "startup", count: 543 },
-      { word: "crypto", count: 432 },
-      { word: "robotics", count: 321 },
-    ],
-  },
-};
+  const [participationCounts, participationMeta, wordStats] = await Promise.all([
+    getParticipationByUser(userId),
+    getParticipationMetaByUser(userId),
+    getUserWordStats(userId, 100),
+  ]);
+
+  const chatIds = Array.from(new Set([
+    ...participationCounts.map((item) => item.chat_id),
+    ...participationMeta.map((item) => item.chat_id),
+  ]));
+  const chats = await listChatsByIds(chatIds);
+  const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
+  const metaMap = new Map(participationMeta.map((item) => [item.chat_id, item]));
+  const countMap = new Map(participationCounts.map((item) => [item.chat_id, item.message_count]));
+
+  const activeChats = chatIds.map((chatId) => {
+    const chat = chatMap.get(chatId);
+    const meta = metaMap.get(chatId);
+    return {
+      chatId,
+      chatName: chat?.display_name ?? null,
+      username: chat?.username ?? null,
+      chatType: chat?.chat_type ?? null,
+      firstMessageAt: meta?.first_message_at ? new Date(meta.first_message_at).toISOString() : null,
+      lastMessageAt: meta?.last_message_at ? new Date(meta.last_message_at).toISOString() : null,
+      messageCount: Number(countMap.get(chatId) ?? 0),
+    };
+  }).sort((left, right) => right.messageCount - left.messageCount);
+
+  const groups = activeChats.filter((chat) => chat.chatType === "group" || chat.chatType === "supergroup");
+  const channels = activeChats.filter((chat) => chat.chatType === "channel");
+
+  const frequentWords = filterTopWords(wordStats);
+  const redactedFields = new Set(userRedaction?.fields ?? []);
+  const hideMessages = redactedFields.has("messages");
+  const hideGroups = redactedFields.has("groups");
+  const hideChannels = redactedFields.has("channels");
+
+  return {
+    userId,
+    bucket: bucket ?? currentBucket(),
+    activeChats: hideMessages ? [] : activeChats,
+    frequentWords: hideMessages ? [] : frequentWords,
+    groups: hideGroups || hideMessages ? [] : groups,
+    channels: hideChannels || hideMessages ? [] : channels,
+  };
+}
 
 export const analyticsRouter = router({
-  getActiveChats: searchModeProcedure
-    .meta({ openapi: { method: "GET", path: "/analytics/getActiveChats", protect: true } })
-    .input(z.object({ region: z.string().optional() }))
-    .output(z.unknown())
-    .query(async ({ input: parsed }) => {
-      return { stats: [], region: parsed.region ?? "global" };
-    }),
-
   getFrequentWords: searchModeProcedure
     .meta({ openapi: { method: "GET", path: "/analytics/getFrequentWords", protect: true } })
     .input(z.object({ scope: z.string() }))
-    .output(z.unknown())
-    .query(async ({ input: parsed }) => {
-      const [scopeType, scopeId] = parsed.scope.includes(":") ? parsed.scope.split(":", 2) : ["user", parsed.scope];
+    .output(z.object({ words: z.array(z.object({ word: z.string(), count: z.number() })) }))
+    .query(async ({ ctx, input }) => {
+      const [scopeType, scopeId] = input.scope.includes(":") ? input.scope.split(":", 2) : ["user", input.scope];
       if (!scopeId) {
         return { words: [] };
       }
 
-      let words: { word: string; count: number }[] = [];
-      try {
-        if (scopeType === "chat") {
-          words = await getChatWordStats(scopeId, 100);
-        } else {
-          words = await getUserWordStats(scopeId, 100);
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
+
+      if (scopeType === "user" || scopeType === "userId") {
+        const userRedaction = await loadSingleRedaction("user", scopeId);
+        if (userRedaction?.type === "full" && !viewer.canBypassRedactions) {
+          return { words: [] };
         }
-      } catch {
-        // Fall back to mock data
-        if (scopeType === "chat") {
-          words = MOCK_CHAT_ANALYTICS[scopeId]?.topWords || [];
-        } else {
-          words = MOCK_USER_ANALYTICS[scopeId]?.frequentWords || [];
+        const fields = new Set(userRedaction?.fields ?? []);
+        if (fields.has("messages")) {
+          return { words: [] };
+        }
+      } else if (scopeType === "chat") {
+        const chat = await getChatById(scopeId);
+        if (chat) {
+          const targetType = chat.chat_type === "channel" ? "channel" : "group";
+          const chatRedaction = await loadSingleRedaction(targetType, scopeId);
+          if (chatRedaction?.type === "full" && !viewer.canBypassRedactions) {
+            return { words: [] };
+          }
+          const fields = new Set(chatRedaction?.fields ?? []);
+          if (fields.has("messages")) {
+            return { words: [] };
+          }
         }
       }
-      return { words: filterTopWords(words) };
-    }),
 
-  getTopEntities: searchModeProcedure
-    .meta({ openapi: { method: "GET", path: "/analytics/getTopEntities", protect: true } })
-    .input(z.object({ entityType: z.enum(["groups", "channels"]) }))
-    .output(z.unknown())
-    .query(async ({ input: parsed }) => {
-      return { top: [], entityType: parsed.entityType };
+      const words = scopeType === "chat"
+        ? await getChatWordStats(scopeId, 100)
+        : await getUserWordStats(scopeId, 100);
+
+      return { words: filterTopWords(words) };
     }),
 
   getUserAnalytics: searchModeProcedure
@@ -107,52 +152,8 @@ export const analyticsRouter = router({
       userId: z.string(),
       bucket: z.string().optional(),
     }))
-    .output(z.object({
-      userId: z.string(),
-      bucket: z.string(),
-      activeChats: z.array(z.unknown()),
-      frequentWords: z.array(z.unknown()),
-    }))
-    .query(async ({ input: parsed }) => {
-      const bucket = parsed.bucket ?? new Date().toISOString().slice(0, 7).replace("-", "");
-
-      let participation: { chat_id: string; first_message_at?: Date; last_message_at?: Date }[] = [];
-      let wordStats: { word: string; count: number }[] = [];
-
-      try {
-        participation = await getParticipationMetaByUser(parsed.userId);
-        wordStats = await getUserWordStats(parsed.userId, 100);
-      } catch {
-        const mock = MOCK_USER_ANALYTICS[parsed.userId];
-        if (mock) {
-          return {
-            userId: parsed.userId,
-            bucket,
-            activeChats: mock.activeChats,
-            frequentWords: mock.frequentWords,
-          };
-        }
-        return {
-          userId: parsed.userId,
-          bucket,
-          activeChats: [],
-          frequentWords: [],
-        };
-      }
-
-      const activeChats = participation.map(p => ({
-        chat_id: p.chat_id,
-        first_message_at: p.first_message_at ?? null,
-        last_message_at: p.last_message_at ?? null,
-      }));
-
-      return {
-        userId: parsed.userId,
-        bucket,
-        activeChats,
-        frequentWords: filterTopWords(wordStats),
-      };
-    }),
+    .output(UserAnalyticsSchema)
+    .query(async ({ ctx, input }) => buildUserAnalyticsData(input.userId, ctx.userId, ctx.userRole, input.bucket)),
 
   getChatAnalytics: searchModeProcedure
     .meta({ openapi: { method: "GET", path: "/analytics/getChatAnalytics", protect: true } })
@@ -163,44 +164,53 @@ export const analyticsRouter = router({
     .output(z.object({
       chatId: z.string(),
       bucket: z.string(),
-      topWords: z.array(z.unknown()),
+      topWords: z.array(z.object({ word: z.string(), count: z.number() })),
     }))
-    .query(async ({ input: parsed }) => {
-      const bucket = parsed.bucket ?? new Date().toISOString().slice(0, 7).replace("-", "");
-      let wordStats: { word: string; count: number }[] = [];
+    .query(async ({ ctx, input }) => {
+      const chat = await getChatById(input.chatId);
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
 
-      try {
-        wordStats = await getChatWordStats(parsed.chatId, 100);
-      } catch {
-        const mock = MOCK_CHAT_ANALYTICS[parsed.chatId];
-        if (mock) {
+      if (chat) {
+        const targetType = chat.chat_type === "channel" ? "channel" : "group";
+        const chatRedaction = await loadSingleRedaction(targetType, input.chatId);
+        if (chatRedaction?.type === "full" && !viewer.canBypassRedactions) {
           return {
-            chatId: parsed.chatId,
-            bucket,
-            topWords: mock.topWords,
+            chatId: input.chatId,
+            bucket: input.bucket ?? currentBucket(),
+            topWords: [],
           };
         }
-        return {
-          chatId: parsed.chatId,
-          bucket,
-          topWords: [],
-        };
+        const fields = new Set(chatRedaction?.fields ?? []);
+        if (fields.has("messages")) {
+          return {
+            chatId: input.chatId,
+            bucket: input.bucket ?? currentBucket(),
+            topWords: [],
+          };
+        }
       }
 
+      const wordStats = await getChatWordStats(input.chatId, 100);
       return {
-        chatId: parsed.chatId,
-        bucket,
+        chatId: input.chatId,
+        bucket: input.bucket ?? currentBucket(),
         topWords: filterTopWords(wordStats),
       };
     }),
 
-  getGlobalStats: searchModeProcedure
-    .meta({ openapi: { method: "GET", path: "/analytics/getGlobalStats", protect: true } })
-    .input(z.object({ bucket: z.string().optional() }).default({}))
-    .output(z.unknown())
-    .query(async ({ input: parsed }) => {
-      const _bucket = parsed.bucket ?? new Date().toISOString().slice(0, 7).replace("-", "");
-      const result = await cassandra().execute("SELECT * FROM global_stats");
-      return result.rows;
+  getTopEntities: searchModeProcedure
+    .meta({ openapi: { method: "GET", path: "/analytics/getTopEntities", protect: true } })
+    .input(z.object({ entityType: z.enum(["groups", "channels"]), userId: z.string() }))
+    .output(z.object({ top: z.array(z.object({ chatId: z.string(), chatName: z.string().nullable(), messageCount: z.number() })) }))
+    .query(async ({ ctx, input }) => {
+      const result = await buildUserAnalyticsData(input.userId, ctx.userId, ctx.userRole);
+      const source = input.entityType === "groups" ? result.groups : result.channels;
+      return {
+        top: source.slice(0, 20).map((item) => ({
+          chatId: item.chatId,
+          chatName: item.chatName,
+          messageCount: item.messageCount,
+        })),
+      };
     }),
 });

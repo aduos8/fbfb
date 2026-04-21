@@ -1,16 +1,20 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { TrackingEventSchema, TrackingRecordSchema } from '../../../shared/api';
 import {
-  createTracking,
   cancelTracking,
-  pauseTracking,
-  reactivateTracking,
-  renewTracking,
+  createTracking,
   getActiveTrackings,
-  getTrackingByProfile,
+  getNextRenewalAt,
+  getPausedTrackings,
   getTrackingById,
+  getTrackingByProfile,
+  getTrackingEventsForUser,
+  type TrackingRecord,
 } from '../../lib/db/tracking';
-import { sql } from '../../lib/db';
+import { loadObservedProfileForUser, chargeTrackingCredits } from '../../lib/trackingSupport';
+import { loadSingleRedaction } from '../../lib/tg-queries/redactions';
+import { getViewerAccess } from '../../lib/tg-queries/viewer';
 import type { Context } from '../context';
 
 const t = initTRPC.context<Context>().create();
@@ -22,6 +26,21 @@ const protectedProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, userId: ctx.userId, userRole: ctx.userRole } });
 });
 
+function serializeTrackingRecord(record: TrackingRecord, isRedacted: boolean = false) {
+  return {
+    id: record.id,
+    profile_user_id: record.profile_user_id,
+    profile_username: isRedacted ? null : record.profile_username,
+    profile_display_name: isRedacted ? null : record.profile_display_name,
+    status: record.status,
+    cost_per_month: record.cost_per_month,
+    created_at: record.created_at.toISOString(),
+    last_renewal_at: record.last_renewal_at.toISOString(),
+    next_renewal_at: getNextRenewalAt(record.last_renewal_at).toISOString(),
+    last_detected_change_at: record.last_detected_change_at?.toISOString() ?? null,
+  };
+}
+
 export const trackingRouter = t.router({
   startTracking: protectedProcedure
     .input(
@@ -31,19 +50,8 @@ export const trackingRouter = t.router({
         profileDisplayName: z.string().max(256).optional(),
       })
     )
+    .output(z.object({ tracking: TrackingRecordSchema }))
     .mutation(async ({ ctx, input }) => {
-      const [balanceRow] = await sql<{ balance: number }[]>`
-        SELECT balance FROM credits WHERE user_id = ${ctx.userId}
-      `;
-      const balance = balanceRow?.balance ?? 0;
-
-      if (balance < 1) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Insufficient credits',
-        });
-      }
-
       const existing = await getTrackingByProfile(ctx.userId, input.profileUserId);
       if (existing) {
         throw new TRPCError({
@@ -52,39 +60,42 @@ export const trackingRouter = t.router({
         });
       }
 
-      await sql.begin(async (trx) => {
-        const [deductResult] = await trx<{ balance: number }[]>`
-          UPDATE credits SET balance = balance - 1, updated_at = NOW()
-          WHERE user_id = ${ctx.userId} AND balance >= 1
-          RETURNING balance
-        `;
-        if (!deductResult) {
-          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Insufficient credits' });
-        }
-        await trx`
-          INSERT INTO credit_transactions (user_id, amount, type, notes)
-          VALUES (${ctx.userId}, -1, 'tracking_start', ${`Profile: ${input.profileUserId}`})
-        `;
+      const observed = await loadObservedProfileForUser(input.profileUserId);
+      if (!observed) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Profile not found',
+        });
+      }
+
+      const charged = await chargeTrackingCredits({
+        userId: ctx.userId,
+        type: 'tracking_start',
+        reference: `tracking:${input.profileUserId}`,
+        notes: `Tracking start: ${input.profileUserId}`,
       });
+
+      if (charged === null) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Insufficient credits',
+        });
+      }
 
       const tracking = await createTracking(
         ctx.userId,
         input.profileUserId,
-        input.profileUsername ?? null,
-        input.profileDisplayName ?? null
+        observed.profileUsername ?? input.profileUsername ?? null,
+        observed.profileDisplayName ?? input.profileDisplayName ?? null,
+        observed.observedProfile
       );
 
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
+      const profileRedaction = await loadSingleRedaction("user", input.profileUserId);
+      const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+
       return {
-        tracking: {
-          id: tracking.id,
-          profile_user_id: tracking.profile_user_id,
-          profile_username: tracking.profile_username,
-          profile_display_name: tracking.profile_display_name,
-          status: tracking.status,
-          cost_per_month: tracking.cost_per_month,
-          created_at: tracking.created_at.toISOString(),
-          last_renewal_at: tracking.last_renewal_at.toISOString(),
-        },
+        tracking: serializeTrackingRecord(tracking, isRedacted),
       };
     }),
 
@@ -102,81 +113,107 @@ export const trackingRouter = t.router({
       return { ok: true };
     }),
 
-  renewTracking: protectedProcedure
-    .input(z.object({ trackingId: z.string().uuid() }))
-    .mutation(async ({ ctx, input }) => {
-      const tracking = await getTrackingById(input.trackingId);
-      if (!tracking) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Tracking not found' });
-      }
-      if (tracking.user_id !== ctx.userId) {
-        throw new TRPCError({ code: 'FORBIDDEN' });
-      }
+  list: protectedProcedure
+    .output(z.object({ trackings: z.array(TrackingRecordSchema) }))
+    .query(async ({ ctx }) => {
+      const trackings = await getActiveTrackings(ctx.userId);
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
 
-      const [balanceRow] = await sql<{ balance: number }[]>`
-        SELECT balance FROM credits WHERE user_id = ${ctx.userId}
-      `;
-      const balance = balanceRow?.balance ?? 0;
+      const result = await Promise.all(
+        trackings.map(async (tracking) => {
+          const profileRedaction = await loadSingleRedaction("user", tracking.profile_user_id);
+          const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+          return serializeTrackingRecord(tracking, isRedacted);
+        })
+      );
 
-      if (balance < 1) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Insufficient credits',
-        });
-      }
-
-      await sql.begin(async (trx) => {
-        const [deductResult] = await trx<{ balance: number }[]>`
-          UPDATE credits SET balance = balance - 1, updated_at = NOW()
-          WHERE user_id = ${ctx.userId} AND balance >= 1
-          RETURNING balance
-        `;
-        if (!deductResult) {
-          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Insufficient credits' });
-        }
-        await trx`
-          INSERT INTO credit_transactions (user_id, amount, type, notes)
-          VALUES (${ctx.userId}, -1, 'tracking_renewal', ${`Tracking: ${input.trackingId}`})
-        `;
-      });
-
-      await renewTracking(input.trackingId);
-      return { ok: true };
+      return { trackings: result };
     }),
 
-  list: protectedProcedure.query(async ({ ctx }) => {
-    const trackings = await getActiveTrackings(ctx.userId);
-    return {
-      trackings: trackings.map((t) => ({
-        id: t.id,
-        profile_user_id: t.profile_user_id,
-        profile_username: t.profile_username,
-        profile_display_name: t.profile_display_name,
-        status: t.status,
-        cost_per_month: t.cost_per_month,
-        created_at: t.created_at.toISOString(),
-        last_renewal_at: t.last_renewal_at.toISOString(),
-      })),
-    };
-  }),
+  getPausedTrackings: protectedProcedure
+    .output(z.object({ trackings: z.array(TrackingRecordSchema) }))
+    .query(async ({ ctx }) => {
+      const trackings = await getPausedTrackings(ctx.userId);
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
+
+      const result = await Promise.all(
+        trackings.map(async (tracking) => {
+          const profileRedaction = await loadSingleRedaction("user", tracking.profile_user_id);
+          const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+          return serializeTrackingRecord(tracking, isRedacted);
+        })
+      );
+
+      return { trackings: result };
+    }),
+
+  history: protectedProcedure
+    .input(z.object({
+      trackingId: z.string().uuid().optional(),
+      limit: z.number().min(1).max(200).default(50),
+    }))
+    .output(z.object({ events: z.array(TrackingEventSchema) }))
+    .query(async ({ ctx, input }) => {
+      if (input.trackingId) {
+        const tracking = await getTrackingById(input.trackingId);
+        if (!tracking || tracking.user_id !== ctx.userId) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Tracking not found' });
+        }
+      }
+
+      const events = await getTrackingEventsForUser({
+        userId: ctx.userId,
+        trackingId: input.trackingId,
+        limit: input.limit,
+      });
+
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
+      const profileIds = [...new Set(events.map((e) => e.profile_user_id))];
+      const redactionMap = new Map<string, boolean>();
+
+      await Promise.all(
+        profileIds.map(async (profileId) => {
+          const profileRedaction = await loadSingleRedaction("user", profileId);
+          redactionMap.set(
+            profileId,
+            profileRedaction?.type === "full" && !viewer.canBypassRedactions
+          );
+        })
+      );
+
+      return {
+        events: events.map((event) => ({
+          id: event.id,
+          tracking_id: event.tracking_id,
+          profile_user_id: event.profile_user_id,
+          profile_username: redactionMap.get(event.profile_user_id) ? null : event.profile_username,
+          field_name: event.field_name,
+          old_value: event.old_value,
+          new_value: event.new_value,
+          created_at: event.created_at.toISOString(),
+        })),
+      };
+    }),
 
   checkTracking: protectedProcedure
     .input(z.object({ profileUserId: z.string() }))
+    .output(z.object({
+      isTracking: z.boolean(),
+      tracking: TrackingRecordSchema.nullable(),
+    }))
     .query(async ({ ctx, input }) => {
       const existing = await getTrackingByProfile(ctx.userId, input.profileUserId);
-      if (!existing) return { isTracking: false, tracking: null };
+      if (!existing) {
+        return { isTracking: false, tracking: null };
+      }
+
+      const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
+      const profileRedaction = await loadSingleRedaction("user", input.profileUserId);
+      const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+
       return {
         isTracking: true,
-        tracking: {
-          id: existing.id,
-          profile_user_id: existing.profile_user_id,
-          profile_username: existing.profile_username,
-          profile_display_name: existing.profile_display_name,
-          status: existing.status,
-          cost_per_month: existing.cost_per_month,
-          created_at: existing.created_at.toISOString(),
-          last_renewal_at: existing.last_renewal_at.toISOString(),
-        },
+        tracking: serializeTrackingRecord(existing, isRedacted),
       };
     }),
 });

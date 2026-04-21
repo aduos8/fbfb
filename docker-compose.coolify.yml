@@ -1,0 +1,93 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: "${PORT:-3000}"
+      NODE_ENV: "production"
+      POSTGRES_URL: "${POSTGRES_URL:?Set POSTGRES_URL}"
+      CASSANDRA_CONTACT_POINTS: "${CASSANDRA_CONTACT_POINTS:-cassandra}"
+      CASSANDRA_LOCAL_DC: "${CASSANDRA_LOCAL_DC:-datacenter1}"
+      CASSANDRA_KEYSPACE: "${CASSANDRA_KEYSPACE:-tgosint}"
+      CASSANDRA_USERNAME: "${CASSANDRA_USERNAME:-cassandra}"
+      CASSANDRA_PASSWORD: "${CASSANDRA_PASSWORD:-cassandra}"
+      MEILISEARCH_URL: "${MEILISEARCH_URL:-http://meilisearch:7700}"
+      MEILISEARCH_API_KEY: "${MEILISEARCH_API_KEY:?Set MEILISEARCH_API_KEY}"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET}"
+      PUBLIC_URL: "${PUBLIC_URL:?Set PUBLIC_URL}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS}"
+      STORAGE_BASE_URL: "${STORAGE_BASE_URL:?Set STORAGE_BASE_URL}"
+      OXAPAY_MERCHANT_KEY: "${OXAPAY_MERCHANT_KEY:-}"
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
+      TELEGRAM_SESSION: "${TELEGRAM_SESSION:-}"
+      STORAGEBOX_SFTP_HOST: "${STORAGEBOX_SFTP_HOST:-}"
+      STORAGEBOX_SFTP_USER: "${STORAGEBOX_SFTP_USER:-}"
+      STORAGEBOX_SFTP_PASSWORD: "${STORAGEBOX_SFTP_PASSWORD:-}"
+      RUN_DB_MIGRATIONS: "${RUN_DB_MIGRATIONS:-true}"
+      RUN_CASSANDRA_INIT: "${RUN_CASSANDRA_INIT:-true}"
+      RUN_SEARCH_REINDEX_ON_BOOT: "${RUN_SEARCH_REINDEX_ON_BOOT:-false}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-tgosint}"
+      POSTGRES_USER: "${POSTGRES_USER:-tgosint}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tgosint} -d ${POSTGRES_DB:-tgosint}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_CLUSTER_NAME: "${CASSANDRA_CLUSTER_NAME:-tgosint}"
+      CASSANDRA_DC: "${CASSANDRA_LOCAL_DC:-datacenter1}"
+      CASSANDRA_RACK: "${CASSANDRA_RACK:-rack1}"
+      MAX_HEAP_SIZE: "${CASSANDRA_MAX_HEAP_SIZE:-1G}"
+      HEAP_NEWSIZE: "${CASSANDRA_HEAP_NEWSIZE:-256m}"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    environment:
+      MEILI_MASTER_KEY: "${MEILISEARCH_API_KEY:?Set MEILISEARCH_API_KEY}"
+      MEILI_ENV: "production"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health | grep -q 'available'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres_data:
+  cassandra_data:
+  meilisearch_data:

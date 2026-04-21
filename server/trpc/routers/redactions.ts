@@ -1,10 +1,12 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import {
-  createRedaction,
+  CANONICAL_REDACTION_FIELDS,
   getRedaction,
+  listRedactionsByType,
   listRedactions,
   removeRedaction,
+  upsertRedaction,
 } from '../../lib/db/redactions';
 import type { Context } from '../context';
 
@@ -17,36 +19,38 @@ const protectedProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, userId: ctx.userId, userRole: ctx.userRole } });
 });
 
-const ownerProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.userRole !== 'owner') {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
+const redactionManagerProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.userRole !== 'owner' && ctx.userRole !== 'admin') {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin or owner access required' });
   }
   return next({ ctx });
 });
 
 export const redactionsRouter = t.router({
-  create: ownerProcedure
+  create: redactionManagerProcedure
     .input(
       z.object({
         targetType: z.enum(['user', 'channel', 'group']),
         targetId: z.string().min(1).max(128),
-        redactionType: z.enum(['full', 'partial']),
+        redactionType: z.enum(['full', 'partial', 'masked']),
         redactedFields: z.array(z.string()).optional(),
+        reason: z.string().min(1).max(500),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const fields =
-        input.redactionType === 'full'
-          ? ['username', 'display_name', 'bio', 'avatar_url']
+        input.redactionType === 'full' || input.redactionType === 'masked'
+          ? [...CANONICAL_REDACTION_FIELDS]
           : (input.redactedFields ?? []);
 
-      const redaction = await createRedaction(
-        input.targetType,
-        input.targetId,
-        input.redactionType,
-        fields,
-        ctx.userId
-      );
+      const redaction = await upsertRedaction({
+        targetType: input.targetType,
+        targetId: input.targetId,
+        redactionType: input.redactionType,
+        redactedFields: fields,
+        reason: input.reason,
+        actorId: ctx.userId,
+      });
 
       return {
         redaction: {
@@ -55,13 +59,18 @@ export const redactionsRouter = t.router({
           target_id: redaction.target_id,
           redaction_type: redaction.redaction_type,
           redacted_fields: redaction.redacted_fields,
+          reason: redaction.reason,
           created_at: redaction.created_at.toISOString(),
         },
       };
     }),
 
-  list: ownerProcedure.query(async () => {
-    const redactions = await listRedactions();
+  list: redactionManagerProcedure
+    .input(z.object({ targetType: z.enum(['user', 'channel', 'group']).optional() }).optional())
+    .query(async ({ input }) => {
+    const redactions = input?.targetType
+      ? await listRedactionsByType(input.targetType)
+      : await listRedactions();
     return {
       redactions: redactions.map((r) => ({
         id: r.id,
@@ -69,16 +78,17 @@ export const redactionsRouter = t.router({
         target_id: r.target_id,
         redaction_type: r.redaction_type,
         redacted_fields: r.redacted_fields,
+        reason: r.reason,
         created_by: r.created_by,
         created_at: r.created_at.toISOString(),
       })),
     };
   }),
 
-  remove: ownerProcedure
+  remove: redactionManagerProcedure
     .input(z.object({ id: z.string().uuid() }))
-    .mutation(async ({ input }) => {
-      await removeRedaction(input.id);
+    .mutation(async ({ ctx, input }) => {
+      await removeRedaction(input.id, ctx.userId);
       return { ok: true };
     }),
 
@@ -100,6 +110,7 @@ export const redactionsRouter = t.router({
           target_id: redaction.target_id,
           redaction_type: redaction.redaction_type,
           redacted_fields: redaction.redacted_fields,
+          reason: redaction.reason,
         },
       };
     }),

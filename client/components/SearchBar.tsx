@@ -6,12 +6,12 @@ import { LoginPromptModal } from "./LoginPromptModal";
 import { useSearchGating } from "@/lib/hooks/useSearchGating";
 import { isAuthenticated } from "@/lib/auth";
 
-type SearchType = "username" | "sound" | "people" | "send";
+type SearchType = "profile" | "channel" | "group" | "message";
 
 const searchTypes: { type: SearchType; label: string; icon: React.ReactNode }[] = [
   {
-    type: "username",
-    label: "Username",
+    type: "profile",
+    label: "Profile",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
         <path
@@ -22,7 +22,7 @@ const searchTypes: { type: SearchType; label: string; icon: React.ReactNode }[] 
     ),
   },
   {
-    type: "sound",
+    type: "channel",
     label: "Channel",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -34,8 +34,8 @@ const searchTypes: { type: SearchType; label: string; icon: React.ReactNode }[] 
     ),
   },
   {
-    type: "people",
-    label: "Groups",
+    type: "group",
+    label: "Group",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
         <path
@@ -46,8 +46,8 @@ const searchTypes: { type: SearchType; label: string; icon: React.ReactNode }[] 
     ),
   },
   {
-    type: "send",
-    label: "Messages",
+    type: "message",
+    label: "Message",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
         <path
@@ -60,7 +60,7 @@ const searchTypes: { type: SearchType; label: string; icon: React.ReactNode }[] 
 ];
 
 export default function SearchBar({ onSearch }: { onSearch?: (query: string, type: SearchType, page?: number, filters?: Record<string, string>) => void }) {
-  const [activeType, setActiveType] = useState<SearchType>("username");
+  const [activeType, setActiveType] = useState<SearchType>("profile");
   const [query, setQuery] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -142,14 +142,14 @@ export default function SearchBar({ onSearch }: { onSearch?: (query: string, typ
 
   const getPlaceholder = () => {
     switch (activeType) {
-      case "username":
-        return "Enter the username you'd like to search";
-      case "sound":
-        return "Enter the channel you'd like to search";
-      case "people":
-        return "Enter the group you'd like to search";
-      case "send":
-        return "Enter the message you'd like to search";
+      case "profile":
+        return "Search profiles by username, display name, number, or user ID";
+      case "channel":
+        return "Search channels by username, display name, bio, or chat ID";
+      case "group":
+        return "Search groups by username, display name, bio, or chat ID";
+      case "message":
+        return "Search stored message text or a keyword";
       default:
         return "Enter your search query";
     }

@@ -46,7 +46,9 @@ export type UserRecord = {
   bio?: string;
   avatar_url?: string;
   photo_id?: string;
-  phone_number?: string;
+  phone_hash?: string;
+  phone_masked?: string;
+  is_premium?: boolean;
   created_at?: Date;
   updated_at?: Date;
 };
@@ -114,11 +116,16 @@ export async function getUserById(userId: number | string): Promise<UserRecord |
 export async function getUserByUsername(username: string): Promise<UserRecord | null> {
   const client = getClient();
   const result = await client.execute(
-    "SELECT * FROM users_by_username WHERE username = ?",
+    "SELECT user_id FROM users_by_username WHERE username = ? LIMIT 1",
     [username],
     { prepare: true }
   );
-  return (result.rows[0] as unknown as UserRecord) ?? null;
+  const row = result.rows[0] as { user_id?: string } | undefined;
+  if (!row?.user_id) {
+    return null;
+  }
+
+  return getUserById(row.user_id);
 }
 
 export async function listUsersByIds(userIds: Array<number | string>): Promise<UserRecord[]> {
@@ -138,79 +145,37 @@ export async function searchUsers(query: string, limit = 25, offset = 0): Promis
   const likeQuery = `%${query.toLowerCase()}%`;
 
   try {
-    const [byUsername, byDisplayName, byBio] = await Promise.all([
-      client.execute(
-        `SELECT user_id, search_username, search_display_name, search_bio FROM users_search WHERE search_username LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-      client.execute(
-        `SELECT user_id, search_username, search_display_name, search_bio FROM users_search WHERE search_display_name LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-      client.execute(
-        `SELECT user_id, search_username, search_display_name, search_bio FROM users_search WHERE search_bio LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-    ]);
-
-    const allRows = [...byUsername.rows, ...byDisplayName.rows, ...byBio.rows];
+    const result = await client.execute(
+      "SELECT * FROM users WHERE username LIKE ? OR display_name LIKE ? OR bio LIKE ? LIMIT ? ALLOW FILTERING",
+      [likeQuery, likeQuery, likeQuery, Math.max(limit + offset, limit)],
+      { prepare: true }
+    );
+    const allRows = result.rows as unknown as UserRecord[];
 
     if (allRows.length === 0) {
       return { results: [], total: 0 };
     }
 
-    const uniqueRows: Map<string, any> = new Map();
+    const uniqueRows: Map<string, UserRecord> = new Map();
     for (const row of allRows) {
-      const r = row as any;
-      if (!uniqueRows.has(r.user_id)) {
-        uniqueRows.set(r.user_id, r);
+      if (!uniqueRows.has(row.user_id)) {
+        uniqueRows.set(row.user_id, row);
       }
     }
 
     const total = uniqueRows.size;
     const paginatedRows = Array.from(uniqueRows.values()).slice(offset, offset + limit);
-
-    if (paginatedRows.length === 0) {
-      return { results: [], total };
-    }
-
-    const userIds = paginatedRows.map(row => row.user_id);
-
-    const userInfos = await client.execute(
-      `SELECT user_id, avatar_url FROM users WHERE user_id IN ?`,
-      [userIds],
-      { prepare: true }
-    );
-
-    const userMap = new Map<string, any>();
-    for (const row of userInfos.rows) {
-      const r = row as any;
-      userMap.set(r.user_id, { user_id: r.user_id, avatar_url: r.avatar_url });
-    }
-
-    const results: UserRecord[] = [];
-
-    for (const row of paginatedRows) {
-      const r = row as any;
-      const userInfo = userMap.get(r.user_id) || {};
-
-      results.push({
-        user_id: r.user_id,
-        username: r.search_username,
-        display_name: r.search_display_name,
-        bio: r.search_bio,
-        avatar_url: userInfo.avatar_url,
-      });
-    }
-
-    return { results, total };
+    return { results: paginatedRows, total };
   } catch (err: any) {
     console.error("[searchUsers] error:", err.message);
     return { results: [], total: 0 };
   }
+}
+
+export async function listAllUsers(): Promise<UserRecord[]> {
+  const client = getClient();
+  const result = await client.execute("SELECT * FROM users", [], { fetchSize: 500000 });
+  return result.rows as unknown as UserRecord[];
 }
 
 // Chat queries
@@ -241,86 +206,46 @@ export async function searchChats(query: string, chatType?: string, limit = 25, 
   const likeQuery = `%${query.toLowerCase()}%`;
 
   try {
-    const [byUsername, byDisplayName, byBio] = await Promise.all([
-      client.execute(
-        `SELECT chat_id, search_username, search_display_name, search_bio FROM chats_search WHERE search_username LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-      client.execute(
-        `SELECT chat_id, search_username, search_display_name, search_bio FROM chats_search WHERE search_display_name LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-      client.execute(
-        `SELECT chat_id, search_username, search_display_name, search_bio FROM chats_search WHERE search_bio LIKE ?`,
-        [likeQuery],
-        { prepare: true }
-      ).catch(() => ({ rows: [] })),
-    ]);
-
-    const allRows = [...byUsername.rows, ...byDisplayName.rows, ...byBio.rows];
+    const result = await client.execute(
+      "SELECT * FROM chats WHERE username LIKE ? OR display_name LIKE ? OR bio LIKE ? LIMIT ? ALLOW FILTERING",
+      [likeQuery, likeQuery, likeQuery, Math.max(limit + offset, limit)],
+      { prepare: true }
+    );
+    const allRows = result.rows as unknown as ChatRecord[];
 
     if (allRows.length === 0) {
       return { results: [], total: 0 };
     }
 
-    const uniqueRows: Map<string, any> = new Map();
+    const uniqueRows: Map<string, ChatRecord> = new Map();
     for (const row of allRows) {
-      const r = row as any;
-      if (!uniqueRows.has(r.chat_id)) {
-        uniqueRows.set(r.chat_id, r);
+      if (!uniqueRows.has(row.chat_id)) {
+        uniqueRows.set(row.chat_id, row);
       }
     }
 
-    const total = uniqueRows.size;
-    const paginatedRows = Array.from(uniqueRows.values()).slice(offset, offset + limit);
-
-    if (paginatedRows.length === 0) {
-      return { results: [], total };
-    }
-
-    const chatIds = paginatedRows.map(row => row.chat_id);
-
-    const chatInfos = await client.execute(
-      `SELECT chat_id, chat_type, username, display_name, member_count, bio, avatar_url FROM chats WHERE chat_id IN ?`,
-      [chatIds],
-      { prepare: true }
-    );
-
-    const chatMap = new Map<string, any>();
-    for (const row of chatInfos.rows) {
-      const r = row as any;
-      chatMap.set(r.chat_id, r);
-    }
-
-    const results: ChatRecord[] = [];
-
-    for (const row of paginatedRows) {
-      const r = row as any;
-      const chatId = r.chat_id;
-
-      const chatInfo = chatMap.get(chatId);
-      if (!chatInfo) continue;
-
-      if (chatType && chatInfo.chat_type !== chatType) continue;
-
-      results.push({
-        chat_id: chatId,
-        chat_type: chatInfo.chat_type,
-        username: r.search_username || chatInfo.username,
-        display_name: r.search_display_name || chatInfo.display_name,
-        bio: r.search_bio || chatInfo.bio,
-        member_count: chatInfo.member_count,
-        avatar_url: chatInfo.avatar_url,
-      });
-    }
-
+    const results = Array.from(uniqueRows.values())
+      .filter((row) => !chatType || row.chat_type === chatType)
+      .slice(offset, offset + limit);
+    const total = Array.from(uniqueRows.values()).filter((row) => !chatType || row.chat_type === chatType).length;
     return { results, total };
   } catch (err: any) {
     console.error("[searchChats] error:", err.message);
     return { results: [], total: 0 };
   }
+}
+
+export async function listAllChats(): Promise<ChatRecord[]> {
+  const client = getClient();
+  const result = await client.execute("SELECT * FROM chats", [], { fetchSize: 10000 });
+  const chats = [...result.rows];
+
+  while (result.nextPage) {
+    const next = await result.nextPage();
+    chats.push(...next.rows);
+  }
+
+  return chats as unknown as ChatRecord[];
 }
 
 // Message queries
@@ -371,6 +296,19 @@ export async function searchMessages(keyword: string, limit = 100): Promise<Mess
   }
 }
 
+export async function listAllMessages(): Promise<MessageRecord[]> {
+  const client = getClient();
+  const result = await client.execute("SELECT * FROM messages_by_id ALLOW FILTERING", [], { fetchSize: 10000 });
+  const messages = [...result.rows];
+
+  while (result.nextPage) {
+    const next = await result.nextPage();
+    messages.push(...next.rows);
+  }
+
+  return messages as unknown as MessageRecord[];
+}
+
 // Participation queries
 export async function getParticipationMetaByUser(userId: number | string): Promise<ParticipationMetaRecord[]> {
   const client = getClient();
@@ -401,6 +339,81 @@ export async function getUserHistory(userId: number | string): Promise<HistoryRe
     { prepare: true }
   );
   return result.rows as unknown as HistoryRecord[];
+}
+
+export type HistoryChange = {
+  field: string;
+  old_value: string | null;
+  new_value: string;
+  changed_at: Date;
+};
+
+export async function getUserHistorySince(
+  userId: number | string,
+  since: Date
+): Promise<HistoryChange[]> {
+  const client = getClient();
+  const sinceTimestamp = since.toISOString();
+
+  const result = await client.execute(
+    "SELECT field, old_value, new_value, changed_at FROM user_history WHERE user_id = ? AND changed_at > ? ORDER BY changed_at ASC",
+    [String(userId), sinceTimestamp],
+    { prepare: true }
+  );
+
+  return result.rows.map(row => ({
+    field: row.field as string,
+    old_value: row.old_value as string | null,
+    new_value: row.new_value as string,
+    changed_at: row.changed_at as Date,
+  }));
+}
+
+export type HistoryRecordLight = {
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_at: Date;
+};
+
+export async function getUserHistoryForBatch(userIds: string[]): Promise<Map<string, HistoryRecordLight[]>> {
+  if (userIds.length === 0) {
+    return new Map();
+  }
+
+  const client = getClient();
+  const BATCH_SIZE = 100;
+  const map = new Map<string, HistoryRecordLight[]>();
+
+  for (let i = 0; i < userIds.length; i += BATCH_SIZE) {
+    const batch = userIds.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map((_, idx) => `?`).join(", ");
+
+    try {
+      const result = await client.execute(
+        `SELECT user_id, field, old_value, new_value, changed_at FROM user_history WHERE user_id IN (${placeholders})`,
+        batch,
+        { prepare: true }
+      );
+
+      for (const row of result.rows) {
+        const uid = row.user_id as string;
+        if (!map.has(uid)) {
+          map.set(uid, []);
+        }
+        map.get(uid)!.push({
+          field: row.field as string,
+          old_value: row.old_value as string | null,
+          new_value: row.new_value as string | null,
+          changed_at: row.changed_at as Date,
+        });
+      }
+    } catch (error) {
+      console.error(`Error fetching history batch ${i}-${i + BATCH_SIZE}:`, error);
+    }
+  }
+
+  return map;
 }
 
 // Word stats queries
