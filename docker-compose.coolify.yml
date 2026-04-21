@@ -28,6 +28,8 @@ services:
       RUN_DB_MIGRATIONS: "${RUN_DB_MIGRATIONS:-true}"
       RUN_CASSANDRA_INIT: "${RUN_CASSANDRA_INIT:-true}"
       RUN_SEARCH_REINDEX_ON_BOOT: "${RUN_SEARCH_REINDEX_ON_BOOT:-false}"
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
     depends_on:
       postgres:
         condition: service_healthy
