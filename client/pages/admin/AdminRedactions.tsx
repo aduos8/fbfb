@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { EyeOff, RefreshCw, Trash2, ShieldEllipsis } from "lucide-react";
 
@@ -15,27 +16,27 @@ export default function AdminRedactions() {
   const { data, refetch } = trpc.admin.redactions.list.useQuery({ entityType });
   const fullRedactMutation = trpc.admin.redactions.fullRedact.useMutation({
     onSuccess: () => { toast.success("Entity redacted"); setEntityId(""); setReason(""); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const maskedRedactMutation = trpc.admin.redactions.maskedRedact.useMutation({
     onSuccess: () => { toast.success("Entity masked"); setEntityId(""); setReason(""); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const partialRedactMutation = trpc.admin.redactions.partialRedact.useMutation({
     onSuccess: () => { toast.success("Fields redacted"); setEntityId(""); setReason(""); setSelectedFields([]); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const removeRedactionMutation = trpc.admin.redactions.remove.useMutation({
     onSuccess: () => { toast.success("Redaction removed"); setViewingEntity(null); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const deactivateMutation = trpc.admin.redactions.deactivate.useMutation({
     onSuccess: () => { toast.success("Redaction deactivated"); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const reactivateMutation = trpc.admin.redactions.reactivate.useMutation({
     onSuccess: () => { toast.success("Redaction reactivated"); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const [viewingEntity, setViewingEntity] = useState<any>(null);
@@ -270,7 +271,7 @@ function RedactionsTable({ redactionList, entityType, setEntityType, deactivateM
             {redactionList.map((r: any, i: number) => (
               <tr key={i} className="hover:bg-white/[0.02] transition-colors">
                 <td className="px-4 py-4">
-                  <span className="font-mono text-[11px] text-white/40 break-all">{r.entity_id || "—"}</span>
+                  <span className="font-mono text-[11px] text-white/40 break-all">{r.entity_id || "-"}</span>
                 </td>
                 <td className="px-4 py-4">
                   <span className={"inline-block px-3 py-1 rounded-full text-[10px] font-semibold border capitalize whitespace-nowrap " + getTypeBadgeClass(r.redaction_type)}>{r.redaction_type}</span>
@@ -286,11 +287,11 @@ function RedactionsTable({ redactionList, entityType, setEntityType, deactivateM
                   </span>
                 </td>
                 <td className="px-4 py-4 min-w-[150px] max-w-[200px]">
-                  <span className="font-sans font-normal text-[11px] text-white/30 line-clamp-2">{r.reason || "—"}</span>
+                  <span className="font-sans font-normal text-[11px] text-white/30 line-clamp-2">{r.reason || "-"}</span>
                 </td>
                 <td className="px-4 py-4 whitespace-nowrap">
                   <span className="font-sans font-normal text-[12px] text-white/40">
-                    {r.created_at ? new Date(r.created_at).toLocaleDateString() : "—"}
+                    {r.created_at ? new Date(r.created_at).toLocaleDateString() : "-"}
                   </span>
                 </td>
                 <td className="px-4 py-4">
@@ -368,7 +369,7 @@ function RedactionsTable({ redactionList, entityType, setEntityType, deactivateM
             <div className="space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <span className="font-sans text-[10px] text-white/40 uppercase tracking-wider">Entity ID</span>
-                <span className="font-mono text-[11px] text-white/60 text-right break-all max-w-[60%]">{r.entity_id || "—"}</span>
+                <span className="font-mono text-[11px] text-white/60 text-right break-all max-w-[60%]">{r.entity_id || "-"}</span>
               </div>
               <div className="flex items-start justify-between gap-2">
                 <span className="font-sans text-[10px] text-white/40 uppercase tracking-wider">Fields</span>
@@ -378,11 +379,11 @@ function RedactionsTable({ redactionList, entityType, setEntityType, deactivateM
               </div>
               <div className="flex items-start justify-between gap-2">
                 <span className="font-sans text-[10px] text-white/40 uppercase tracking-wider">Reason</span>
-                <span className="font-sans text-[11px] text-white/50 text-right max-w-[60%] line-clamp-2">{r.reason || "—"}</span>
+                <span className="font-sans text-[11px] text-white/50 text-right max-w-[60%] line-clamp-2">{r.reason || "-"}</span>
               </div>
               <div className="flex items-start justify-between gap-2">
                 <span className="font-sans text-[10px] text-white/40 uppercase tracking-wider">Date</span>
-                <span className="font-sans text-[11px] text-white/50">{r.created_at ? new Date(r.created_at).toLocaleDateString() : "—"}</span>
+                <span className="font-sans text-[11px] text-white/50">{r.created_at ? new Date(r.created_at).toLocaleDateString() : "-"}</span>
               </div>
             </div>
           </div>

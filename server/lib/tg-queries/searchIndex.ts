@@ -176,11 +176,11 @@ export async function configureSearchIndices() {
   }
 
   const messageSettingsTask = await updateIndexSettings(SEARCH_INDEXES.messages, {
-    searchableAttributes: ["content", "senderUsername", "senderDisplayName", "chatTitle", "chatUsername"],
+    searchableAttributes: ["content", "senderUsername", "senderDisplayName", "chatTitle"],
     filterableAttributes: ["chatId", "senderId", "senderUsername", "hasMedia", "containsLinks", "contentLength", "timestampMs"],
     sortableAttributes: ["timestampMs"],
     typoTolerance: { enabled: true },
-    pagination: { maxTotalHits: 1000000 },
+    pagination: { maxTotalHits: 900000000 },
   });
   await waitForTask(messageSettingsTask.taskUid);
 }

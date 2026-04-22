@@ -121,11 +121,11 @@ export default function AdminAuditLogs() {
                     {log.created_at ? new Date(log.created_at).toLocaleString("en-GB", {
                       day: "numeric", month: "short", year: "numeric",
                       hour: "2-digit", minute: "2-digit",
-                    }) : "—"}
+                    }) : "-"}
                   </span>
                 </td>
                 <td className="px-4 py-4">
-                  <span className="font-mono text-[11px] text-white/40">{log.admin_id || log.adminId || "—"}</span>
+                  <span className="font-mono text-[11px] text-white/40">{log.admin_id || log.adminId || "-"}</span>
                 </td>
                 <td className="px-4 py-4">
                   <span className="font-sans font-medium text-[13px] text-white/70">
@@ -133,21 +133,21 @@ export default function AdminAuditLogs() {
                   </span>
                 </td>
                 <td className="px-4 py-4">
-                  <span className="font-mono text-[11px] text-white/30">{log.target_entity || log.targetEntity || log.target_id || "—"}</span>
+                  <span className="font-mono text-[11px] text-white/30">{log.target_entity || log.targetEntity || log.target_id || "-"}</span>
                 </td>
                 <td className="px-4 py-4">
                   <span className="font-sans font-normal text-[11px] text-white/30 line-clamp-1">
                     {(() => {
                       try {
                         const meta = typeof log.metadata === "string" ? JSON.parse(log.metadata) : log.metadata;
-                        if (!meta) return "—";
+                        if (!meta) return "-";
                         if (log.action === "credit_adjustment" || log.action === "credit_set_balance") {
                           return `${meta.amount > 0 ? "+" : ""}${meta.amount} credits${meta.reason ? ` - ${meta.reason}` : ""}`;
                         }
                         if (log.action === "user_role_change") return `Role: ${meta.role}`;
                         if (log.action === "purchase_refund") return meta.reason || "Refunded";
                         return meta.reason || JSON.stringify(meta);
-                      } catch { return "—"; }
+                      } catch { return "-"; }
                     })()}
                   </span>
                 </td>

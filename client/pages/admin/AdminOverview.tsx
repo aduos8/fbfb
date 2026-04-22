@@ -60,7 +60,7 @@ export default function AdminOverview() {
         {[
           { label: "Users", value: userList.length, icon: "U" },
           { label: "Active Vouchers", value: voucherList.length, icon: "V" },
-          { label: "Purchases", value: "—", icon: "P" },
+          { label: "Purchases", value: "-", icon: "P" },
           { label: "Audit Logs", value: logList.length, icon: "A" },
         ].map((stat, i) => (
           <div

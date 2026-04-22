@@ -27,6 +27,11 @@ function generateToken(): string {
   return Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function loadSpeakeasy() {
+  const mod = await import("speakeasy");
+  return (mod as any).default ?? mod;
+}
+
 export const authRouter = t.router({
   register: publicProcedure
     .input(z.object({
@@ -166,8 +171,8 @@ export const authRouter = t.router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "2FA not configured" });
       }
 
-      const speakeasy = await import("speakeasy");
-      const verified = speakeasy.verifyTotp({
+      const speakeasy = await loadSpeakeasy();
+      const verified = speakeasy.totp.verify({
         secret: user.two_fa_secret,
         encoding: "base32",
         token: code,
@@ -177,6 +182,76 @@ export const authRouter = t.router({
       if (!verified) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid 2FA code" });
       }
+
+      const token = generateToken();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+      await sql`
+        INSERT INTO sessions (user_id, token, expires_at)
+        VALUES (${user.id}, ${token}, ${expiresAt})
+      `;
+
+      await sql`
+        UPDATE users SET last_login_at = NOW() WHERE id = ${user.id}
+      `;
+
+      appendSetCookie(ctx.res, createTokenCookie(token));
+      appendSetCookie(ctx.res, createAuthStateCookie());
+
+      return { ok: true, user: { email: user.email, role: user.role } };
+    }),
+
+  useBackupCode: publicProcedure
+    .input(z.object({ userId: z.string(), code: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const normalizedCode = input.code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+      const [user] = await sql<{
+        id: string;
+        email: string;
+        role: string;
+        status: string;
+        two_fa_enabled: boolean;
+        two_fa_backup_codes: string[] | null;
+      }[]>`
+        SELECT id, email, role, status, two_fa_enabled, two_fa_backup_codes
+        FROM users
+        WHERE id = ${input.userId}
+      `;
+
+      if (!user) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid session" });
+      }
+
+      if (user.status === "suspended") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Account suspended" });
+      }
+
+      if (!user.two_fa_enabled) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "2FA not enabled" });
+      }
+
+      const storedHashes = user.two_fa_backup_codes ?? [];
+      let matchedIndex = -1;
+
+      for (let i = 0; i < storedHashes.length; i++) {
+        const matched = await bcrypt.compare(normalizedCode, storedHashes[i]);
+        if (matched) {
+          matchedIndex = i;
+          break;
+        }
+      }
+
+      if (matchedIndex === -1) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid backup code" });
+      }
+
+      const remainingCodes = storedHashes.filter((_, index) => index !== matchedIndex);
+      await sql`
+        UPDATE users
+        SET two_fa_backup_codes = ${remainingCodes}, updated_at = NOW()
+        WHERE id = ${user.id}
+      `;
 
       const token = generateToken();
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -319,9 +394,10 @@ export const authRouter = t.router({
   }),
 
   setup2FA: protectedProcedure.mutation(async ({ ctx }) => {
-    const speakeasy = await import("speakeasy");
+    const speakeasy = await loadSpeakeasy();
     const secret = speakeasy.generateSecret({
-      name: `FusionApp (${ctx.userId})`,
+      name: "TG OSINT",
+      issuer: "TG OSINT",
       length: 20,
     });
 
@@ -339,8 +415,8 @@ export const authRouter = t.router({
   confirm2FA: protectedProcedure
     .input(z.object({ secret: z.string(), code: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const speakeasy = await import("speakeasy");
-      const verified = speakeasy.verifyTotp({
+      const speakeasy = await loadSpeakeasy();
+      const verified = speakeasy.totp.verify({
         secret: input.secret,
         encoding: "base32",
         token: input.code,
@@ -351,16 +427,23 @@ export const authRouter = t.router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid verification code" });
       }
 
-      await sql`
-        UPDATE users SET two_fa_enabled = TRUE, updated_at = NOW()
-        WHERE id = ${ctx.userId}
-      `;
-
       const backupCodes: string[] = [];
       for (let i = 0; i < 8; i++) {
         const code = Math.random().toString(36).substring(2, 10).toUpperCase();
         backupCodes.push(code);
       }
+
+      const backupCodeHashes = await Promise.all(
+        backupCodes.map((code) => bcrypt.hash(code, 12)),
+      );
+
+      await sql`
+        UPDATE users
+        SET two_fa_enabled = TRUE,
+            two_fa_backup_codes = ${backupCodeHashes},
+            updated_at = NOW()
+        WHERE id = ${ctx.userId}
+      `;
 
       return { backupCodes };
     }),
@@ -379,7 +462,11 @@ export const authRouter = t.router({
       }
 
       await sql`
-        UPDATE users SET two_fa_enabled = FALSE, two_fa_secret = NULL, updated_at = NOW()
+        UPDATE users
+        SET two_fa_enabled = FALSE,
+            two_fa_secret = NULL,
+            two_fa_backup_codes = '{}',
+            updated_at = NOW()
         WHERE id = ${ctx.userId}
       `;
 

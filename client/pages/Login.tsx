@@ -6,6 +6,7 @@ import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
 import { isAuthenticated } from "@/lib/auth";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 
 export default function Login() {
@@ -37,12 +38,12 @@ export default function Login() {
         return;
       }
       if (data.ok && data.user) {
-        toast.success(`Welcome back, ${(data.user as any).email || "User"}`);
+        toast.success(`Welcome back, ${data.user.email || "User"}`);
         navigate("/dashboard");
       }
     },
     onError: (err) => {
-      setError(err.message || "Invalid credentials");
+      setError(getUserFriendlyErrorMessage(err, "Invalid credentials"));
       setLoading(false);
     },
   });

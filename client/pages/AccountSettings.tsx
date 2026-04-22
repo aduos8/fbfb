@@ -4,10 +4,12 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { clearToken } from "@/lib/auth";
 import { toast } from "sonner";
 import { useNavigate, Link } from "react-router-dom";
-import { Eye, EyeOff, ArrowUpRight, ArrowDownRight, PlusCircle } from "lucide-react";
+import { Eye, EyeOff, ArrowUpRight, ArrowDownRight, PlusCircle, Shield, ShieldCheck, ShieldOff } from "lucide-react";
+import QRCode from "qrcode";
 
 export default function AccountSettings() {
   const pageRef = useRef<HTMLDivElement>(null);
@@ -28,7 +30,7 @@ export default function AccountSettings() {
       utils.account.getProfile.invalidate();
       toast.success("Profile updated");
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const changePassword = trpc.account.changePassword.useMutation({
@@ -38,7 +40,7 @@ export default function AccountSettings() {
       setNewPassword("");
       setConfirmPassword("");
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const deleteAccount = trpc.account.deleteAccount.useMutation({
@@ -47,7 +49,7 @@ export default function AccountSettings() {
       clearToken();
       navigate("/");
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const createPurchase = trpc.purchases.createPurchase.useMutation({
@@ -58,7 +60,7 @@ export default function AccountSettings() {
         toast.success("Credits added!");
       }
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const profileData = profile?.profile as any;
@@ -74,6 +76,46 @@ export default function AccountSettings() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [purchasingPkg, setPurchasingPkg] = useState<string | null>(null);
+  const [twoFaStep, setTwoFaStep] = useState<"idle" | "setup" | "confirm" | "disable">("idle");
+  const [twoFaSecret, setTwoFaSecret] = useState("");
+  const [twoFaQr, setTwoFaQr] = useState("");
+  const [twoFaCode, setTwoFaCode] = useState("");
+  const [twoFaDisablePassword, setTwoFaDisablePassword] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+
+  const { data: twoFaStatus, refetch: refetchTwoFa } = trpc.auth.get2FAStatus.useQuery();
+
+  const setup2FA = trpc.auth.setup2FA.useMutation({
+    onSuccess: async (data) => {
+      setTwoFaSecret(data.secret);
+      if (data.otpauthUrl) {
+        const qr = await QRCode.toDataURL(data.otpauthUrl);
+        setTwoFaQr(qr);
+      }
+      setTwoFaStep("confirm");
+    },
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
+  });
+
+  const confirm2FA = trpc.auth.confirm2FA.useMutation({
+    onSuccess: (data) => {
+      setBackupCodes(data.backupCodes);
+      setTwoFaStep("idle");
+      refetchTwoFa();
+      toast.success("2FA enabled");
+    },
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
+  });
+
+  const disable2FA = trpc.auth.disable2FA.useMutation({
+    onSuccess: () => {
+      setTwoFaStep("idle");
+      setTwoFaDisablePassword("");
+      refetchTwoFa();
+      toast.success("2FA disabled");
+    },
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
+  });
 
   useEffect(() => {
     if (profileData?.username) {
@@ -126,7 +168,7 @@ export default function AccountSettings() {
   };
 
   const getAccountAge = () => {
-    if (!profileData?.created_at) return "—";
+    if (!profileData?.created_at) return "-";
     const created = new Date(profileData.created_at);
     const now = new Date();
     const days = Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
@@ -165,7 +207,7 @@ export default function AccountSettings() {
                 <div className="flex flex-col gap-5">
                   <div>
                     <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-1">Email</span>
-                    <span className="font-sans font-medium text-[14px] md:text-[15px] text-white/80">{profileData?.email || "—"}</span>
+                    <span className="font-sans font-medium text-[14px] md:text-[15px] text-white/80">{profileData?.email || "-"}</span>
                   </div>
                   <div>
                     <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-1">Role</span>
@@ -294,7 +336,7 @@ export default function AccountSettings() {
                 </div>
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Searches</span>
-                  <span className="font-sans font-bold text-[28px] text-white">{balanceData?.balance ? Math.floor(balanceData.balance * 0.5) : 186}</span>
+                  <span className="font-sans font-bold text-[28px] text-white">{balanceData?.total_searches?.toLocaleString() ?? "0"}</span>
                 </div>
               </div>
               {txns.length > 0 && (
@@ -309,7 +351,7 @@ export default function AccountSettings() {
                             {isPositive ? <ArrowDownRight className="w-4 h-4 text-[#05df72]" /> : <ArrowUpRight className="w-4 h-4 text-[#ff4a4a]" />}
                             <div>
                               <span className="font-sans font-normal text-[12px] md:text-[13px] text-white/80 capitalize block">{txn.transaction_type?.replace(/_/g, " ") || "Transaction"}</span>
-                              <span className="font-sans font-normal text-[10px] text-white/40">{txn.created_at ? new Date(txn.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "—"}</span>
+                              <span className="font-sans font-normal text-[10px] text-white/40">{txn.created_at ? new Date(txn.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "-"}</span>
                             </div>
                           </div>
                           <span className={`font-mono font-medium text-[13px] md:text-[14px] ${isPositive ? "text-[#05df72]" : "text-[#ff4a4a]"}`}>{isPositive ? "+" : ""}{txn.amount}</span>
@@ -321,6 +363,100 @@ export default function AccountSettings() {
               )}
             </div>
 
+
+            <div className="card-border-gradient rounded-[20px] p-6 md:p-8">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  {twoFaStatus?.enabled ? <ShieldCheck className="w-5 h-5 text-[#05df72]" /> : <Shield className="w-5 h-5 text-white/40" />}
+                  <h2 className="font-sans font-semibold text-[15px] md:text-[17px] text-white">Two-Factor Authentication</h2>
+                </div>
+                <span className={`font-sans font-normal text-[11px] px-3 py-1 rounded-full ${twoFaStatus?.enabled ? "bg-[#05df72]/10 text-[#05df72]" : "bg-white/5 text-white/40"}`}>
+                  {twoFaStatus?.enabled ? "Enabled" : "Disabled"}
+                </span>
+              </div>
+
+              {twoFaStep === "idle" && backupCodes.length === 0 && (
+                <div className="flex flex-col gap-4">
+                  <p className="font-sans font-normal text-[13px] md:text-[14px] text-white/50 leading-relaxed">
+                    {twoFaStatus?.enabled ? "Your account is protected with an authenticator app." : "Add an extra layer of security using Google Authenticator, Authy, or any TOTP app."}
+                  </p>
+                  {twoFaStatus?.enabled ? (
+                    <button onClick={() => setTwoFaStep("disable")} className="flex items-center gap-2 px-5 py-2.5 rounded-[10px] bg-transparent font-sans font-normal text-[13px] text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer border border-red-500/30 w-fit">
+                      <ShieldOff className="w-4 h-4" /> Disable 2FA
+                    </button>
+                  ) : (
+                    <button onClick={() => setup2FA.mutate()} disabled={setup2FA.isPending} className="flex items-center gap-2 px-5 py-2.5 rounded-[10px] bg-[#3A2AEE] font-sans font-normal text-[13px] text-white hover:bg-[#4a3aff] transition-colors cursor-pointer border-0 w-fit disabled:opacity-50">
+                      <Shield className="w-4 h-4" /> {setup2FA.isPending ? "Setting up..." : "Enable 2FA"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {twoFaStep === "confirm" && (
+                <div className="flex flex-col gap-5 max-w-[420px]">
+                  <p className="font-sans font-normal text-[13px] text-white/50">Scan this QR code with your authenticator app, then enter the 6-digit code to confirm.</p>
+                  {twoFaQr && <img src={twoFaQr} alt="QR Code" className="w-[160px] h-[160px] rounded-[12px] bg-white p-2" />}
+                  <div>
+                    <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Manual entry key</span>
+                    <span className="font-mono text-[12px] text-white/60 bg-white/5 px-3 py-2 rounded-[8px] block break-all">{twoFaSecret}</span>
+                  </div>
+                  <div>
+                    <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Verification code</span>
+                    <input
+                      type="text"
+                      value={twoFaCode}
+                      onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      placeholder="000000"
+                      maxLength={6}
+                      className="w-full bg-[#1a1a1f] border border-[rgba(255,255,255,0.08)] rounded-[12px] h-[48px] px-5 outline-none font-sans font-normal text-[14px] tracking-[0.3em] text-white/80 placeholder:text-white/25 placeholder:tracking-normal focus:border-[rgba(58,42,238,0.4)]"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => confirm2FA.mutate({ secret: twoFaSecret, code: twoFaCode })} disabled={twoFaCode.length !== 6 || confirm2FA.isPending} className="px-5 py-2.5 rounded-[10px] bg-[#3A2AEE] font-sans font-normal text-[13px] text-white hover:bg-[#4a3aff] transition-colors cursor-pointer border-0 disabled:opacity-50">
+                      {confirm2FA.isPending ? "Verifying..." : "Confirm & Enable"}
+                    </button>
+                    <button onClick={() => { setTwoFaStep("idle"); setTwoFaCode(""); setTwoFaSecret(""); setTwoFaQr(""); }} className="px-5 py-2.5 rounded-[10px] bg-transparent font-sans font-normal text-[13px] text-white/60 hover:bg-white/5 transition-colors cursor-pointer border border-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {twoFaStep === "disable" && (
+                <div className="flex flex-col gap-4 max-w-[400px]">
+                  <p className="font-sans font-normal text-[13px] text-white/50">Enter your password to disable two-factor authentication.</p>
+                  <input
+                    type="password"
+                    value={twoFaDisablePassword}
+                    onChange={(e) => setTwoFaDisablePassword(e.target.value)}
+                    placeholder="Your password"
+                    className="w-full bg-[#1a1a1f] border border-[rgba(255,255,255,0.08)] rounded-[12px] h-[48px] px-5 outline-none font-sans font-normal text-[14px] text-white/80 placeholder:text-white/25 focus:border-[rgba(58,42,238,0.4)]"
+                  />
+                  <div className="flex gap-3">
+                    <button onClick={() => disable2FA.mutate({ password: twoFaDisablePassword })} disabled={!twoFaDisablePassword || disable2FA.isPending} className="px-5 py-2.5 rounded-[10px] bg-red-500 font-sans font-normal text-[13px] text-white hover:bg-red-600 transition-colors cursor-pointer border-0 disabled:opacity-50">
+                      {disable2FA.isPending ? "Disabling..." : "Disable 2FA"}
+                    </button>
+                    <button onClick={() => { setTwoFaStep("idle"); setTwoFaDisablePassword(""); }} className="px-5 py-2.5 rounded-[10px] bg-transparent font-sans font-normal text-[13px] text-white/60 hover:bg-white/5 transition-colors cursor-pointer border border-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {backupCodes.length > 0 && (
+                <div className="flex flex-col gap-4">
+                  <p className="font-sans font-normal text-[13px] text-[#05df72]">2FA enabled. Save these backup codes somewhere safe - they won't be shown again.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {backupCodes.map((code, i) => (
+                      <span key={i} className="font-mono text-[12px] text-white/70 bg-white/5 px-3 py-2 rounded-[8px] text-center">{code}</span>
+                    ))}
+                  </div>
+                  <button onClick={() => setBackupCodes([])} className="px-5 py-2.5 rounded-[10px] bg-[#3A2AEE] font-sans font-normal text-[13px] text-white hover:bg-[#4a3aff] transition-colors cursor-pointer border-0 w-fit">
+                    Done
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="rounded-[20px] p-6 md:p-8" style={{ background: "rgba(239,68,68,0.04)", border: "1px solid rgba(239,68,68,0.15)" }}>
               <h2 className="font-sans font-semibold text-[15px] md:text-[17px] text-red-400 mb-4">Danger Zone</h2>
               <p className="font-sans font-normal text-[13px] md:text-[14px] text-white/50 leading-relaxed mb-5">

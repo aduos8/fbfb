@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   email_verified BOOLEAN NOT NULL DEFAULT FALSE,
   two_fa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   two_fa_secret VARCHAR(255),
+  two_fa_backup_codes TEXT[] NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_login_at TIMESTAMPTZ
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_backup_codes TEXT[] NOT NULL DEFAULT '{}';
 
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (

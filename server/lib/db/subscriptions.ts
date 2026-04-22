@@ -98,10 +98,17 @@ export async function allocateSubscriptionCredits(
 ): Promise<void> {
   const credits = PLAN_CREDITS[planType];
   await sql.begin(async (trx) => {
-    await trx`
+    const [updated] = await trx<{ balance: number }[]>`
       UPDATE credits SET balance = balance + ${credits}, updated_at = NOW()
-      WHERE user_id = ${userId}
+      WHERE user_id = ${userId} AND balance + ${credits} <= 5000
+      RETURNING balance
     `;
+
+    if (!updated) {
+      console.log('[subscriptions] Credit cap reached for user:', userId, '— skipping allocation for plan:', planType);
+      return;
+    }
+
     await trx`
       INSERT INTO credit_transactions (user_id, amount, type, notes)
       VALUES (${userId}, ${credits}, 'subscription_credit', ${`Plan: ${planType}`})

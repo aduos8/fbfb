@@ -70,15 +70,15 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Credits</span>
-                  <span className="font-sans font-bold text-white text-[28px]">{balance?.credits?.toLocaleString() ?? "—"}</span>
+                  <span className="font-sans font-bold text-white text-[28px]">{balance?.credits?.toLocaleString() ?? "-"}</span>
                 </div>
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Earned</span>
-                  <span className="font-sans font-bold text-white text-[28px]">{summary?.total_credits_earned?.toLocaleString() ?? "—"}</span>
+                  <span className="font-sans font-bold text-white text-[28px]">{summary?.total_credits_earned?.toLocaleString() ?? "-"}</span>
                 </div>
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Searches</span>
-                  <span className="font-sans font-bold text-white text-[28px]">{summary?.total_transactions?.toLocaleString() ?? "—"}</span>
+                  <span className="font-sans font-bold text-white text-[28px]">{summary?.total_transactions?.toLocaleString() ?? "-"}</span>
                 </div>
                 <div>
                   <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em] block mb-2">Tracked</span>
@@ -114,7 +114,7 @@ export default function Dashboard() {
                                 day: "numeric",
                                 month: "short",
                                 year: "numeric",
-                              }) : "—"}
+                              }) : "-"}
                             </span>
                           </div>
                           <span className={`font-mono font-medium text-[13px] md:text-[14px] ${txn.amount > 0 ? "text-[#05df72]" : "text-[#ff4a4a]"}`}>

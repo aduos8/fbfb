@@ -418,7 +418,7 @@ export default function Purchases() {
                                   month: "short",
                                   year: "numeric",
                                 })
-                              : "—"}
+                              : "-"}
                           </p>
                         </div>
                       </div>

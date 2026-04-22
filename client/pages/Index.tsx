@@ -21,6 +21,7 @@ type ResultNavigationState = {
   prefetchedMessage?: LookupMessage;
 };
 
+
 const searchTypeLabelMap: Record<SearchType, string> = {
   profile: "Profile",
   channel: "Channel",
@@ -146,6 +147,11 @@ function buildPrefetchedLookupMessage(result: MessageResult): LookupMessage {
   };
 }
 
+function getInitial(value: string | null | undefined, fallback: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.charAt(0).toUpperCase() : fallback;
+}
+
 function ResultCard({
   result,
   onNavigate,
@@ -233,15 +239,28 @@ function ResultCard({
     });
   };
 
-  const avatar = (() => {
+  const avatarSrc = (() => {
     switch (result.resultType) {
       case "profile":
-        return result.profilePhoto || `https://i.pravatar.cc/150?u=${result.telegramUserId}`;
+        return result.profilePhoto || undefined;
       case "channel":
       case "group":
-        return result.profilePhoto || `https://i.pravatar.cc/150?u=${result.telegramChatId}`;
+        return result.profilePhoto || undefined;
       case "message":
-        return `https://i.pravatar.cc/150?u=${result.chat.chatId}:${result.messageId}`;
+        return undefined;
+    }
+  })();
+
+  const avatarFallbackInitial = (() => {
+    switch (result.resultType) {
+      case "profile":
+        return getInitial(result.displayName || result.username, "U");
+      case "channel":
+        return getInitial(result.channelTitle || result.username, "C");
+      case "group":
+        return getInitial(result.groupTitle || result.username, "G");
+      case "message":
+        return getInitial(result.sender.displayName || result.sender.username, "M");
     }
   })();
 
@@ -295,8 +314,8 @@ function ResultCard({
         {
           const memberCount = result.activityMetrics.memberCount ?? result.activityMetrics.participantCount;
         return result.groupDescription
-          || `${result.publicIndicator} ${result.groupType || "group"}${memberCount != null ? ` · ${memberCount.toLocaleString()} members` : ""}`;
-        }
+        || `${result.publicIndicator} ${result.groupType || "group"}${memberCount != null ? ` · ${memberCount.toLocaleString()} members` : ""}`;
+      }
       case "message":
         return result.chat.title
           ? `in ${result.chat.title}${result.timestamp ? ` · ${new Date(result.timestamp).toLocaleString()}` : ""}`
@@ -325,11 +344,17 @@ function ResultCard({
       />
       <div className="relative px-5 py-3">
         <div className="flex items-center gap-4">
-          <img
-            src={avatar}
-            alt={typeof title === "string" ? title : result.resultType}
-            className="w-[56px] h-[56px] rounded-[8px] object-cover flex-shrink-0"
-          />
+          {avatarSrc ? (
+            <img
+              src={avatarSrc}
+              alt={typeof title === "string" ? title : result.resultType}
+              className="w-[56px] h-[56px] rounded-[8px] object-cover flex-shrink-0"
+            />
+          ) : (
+            <div className="w-[56px] h-[56px] rounded-[8px] bg-[rgba(58,42,238,0.15)] flex-shrink-0 flex items-center justify-center">
+              <span className="text-[#3A2AEE] text-[24px] font-bold">{avatarFallbackInitial}</span>
+            </div>
+          )}
           <div className="flex-1 min-w-0 py-1.5">
             <div className="mb-1.5">
               <span className="font-sans font-semibold text-[16px] text-white leading-tight block truncate">

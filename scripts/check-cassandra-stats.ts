@@ -1,8 +1,8 @@
 import { Client, auth } from "cassandra-driver";
 
 async function main() {
-  const targetKeyspace = "tgosint";
-  
+  const targetKeyspace = "telegram_logger";
+
   // Connect without specifying a keyspace initially to avoid connection errors
   const client = new Client({
     contactPoints: ["localhost"],
@@ -17,7 +17,7 @@ async function main() {
     // Check if the keyspace actually exists
     const keyspacesResult = await client.execute("SELECT keyspace_name FROM system_schema.keyspaces");
     const existingKeyspaces = keyspacesResult.rows.map(r => r.keyspace_name);
-    
+
     if (!existingKeyspaces.includes(targetKeyspace)) {
       console.error(`Error: Keyspace '${targetKeyspace}' does not exist!`);
       console.log(`Available keyspaces: ${existingKeyspaces.join(', ')}`);

@@ -12,7 +12,6 @@ export default function AdminRoute({ children }: AdminRouteProps) {
   if (!hasAuthCookie) {
     return <Navigate to="/login" replace />;
   }
-
   if (isLoading) {
     return null;
   }

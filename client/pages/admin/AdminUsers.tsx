@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { Search, Ban, UserX, Eye, ChevronLeft, ChevronRight, RefreshCw, ChevronDown } from "lucide-react";
 
@@ -66,7 +67,7 @@ export default function AdminUsers() {
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [detailTab, setDetailTab] = useState<"info" | "purchases" | "transactions">("info");
   const { data: currentUser } = trpc.auth.me.useQuery(undefined, { retry: false });
-  const currentUserIsOwner = currentUser?.role === "owner";
+  const currentUserIsOwner = currentUser?.role === "owner"; 
 
   const { data, refetch } = trpc.admin.users.list.useQuery({
     status: statusFilter === "all" ? undefined : statusFilter,
@@ -80,19 +81,19 @@ export default function AdminUsers() {
 
   const suspendMutation = trpc.admin.users.suspend.useMutation({
     onSuccess: () => { toast.success("User suspended"); refetch(); setSelectedUser(null); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const unsuspendMutation = trpc.admin.users.unsuspend.useMutation({
     onSuccess: () => { toast.success("User unsuspended"); refetch(); setSelectedUser(null); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const banMutation = trpc.admin.users.ban.useMutation({
     onSuccess: () => { toast.success("User banned"); refetch(); setSelectedUser(null); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const changeRoleMutation = trpc.admin.users.changeRole.useMutation({
     onSuccess: () => { toast.success("Role updated"); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const { data: userDetail } = trpc.admin.users.getById.useQuery(
     { id: selectedUser?.id || "" },
@@ -197,7 +198,7 @@ export default function AdminUsers() {
                 </td>
                 <td className="px-4 py-3">
                   <span className="font-sans font-normal text-[11px] text-white/40">
-                    {u.created_at ? new Date(u.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                    {u.created_at ? new Date(u.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "-"}
                   </span>
                 </td>
                 <td className="px-4 py-3">
@@ -210,12 +211,13 @@ export default function AdminUsers() {
                     </button>
                     <button
                       onClick={() => u.status === "suspended" ? unsuspendMutation.mutate({ id: u.id }) : suspendMutation.mutate({ id: u.id })}
+                      disabled={u.role === "owner"}
                       className={`w-7 h-7 rounded-[5px] bg-transparent border flex items-center justify-center transition-colors cursor-pointer ${
                         u.status === "suspended"
                           ? "border-green-500/20 hover:bg-green-500/5"
                           : "border-yellow-500/20 hover:bg-yellow-500/5"
-                      }`}
-                      title={u.status === "suspended" ? "Unsuspend" : "Suspend"}
+                      } ${u.role === "owner" ? "opacity-40 cursor-not-allowed hover:bg-transparent" : ""}`}
+                      title={u.role === "owner" ? "Owners cannot be suspended" : u.status === "suspended" ? "Unsuspend" : "Suspend"}
                     >
                       {u.status === "suspended" ? (
                         <RefreshCw className="w-3 h-3 text-green-400/60" />
@@ -225,7 +227,11 @@ export default function AdminUsers() {
                     </button>
                     <button
                       onClick={() => { if (confirm("Ban this user?")) banMutation.mutate({ id: u.id, reason: "Admin action" }); }}
-                      className="w-7 h-7 rounded-[5px] bg-transparent border border-red-500/20 flex items-center justify-center hover:bg-red-500/5 transition-colors cursor-pointer"
+                      disabled={u.role === "owner"}
+                      className={`w-7 h-7 rounded-[5px] bg-transparent border border-red-500/20 flex items-center justify-center transition-colors cursor-pointer ${
+                        u.role === "owner" ? "opacity-40 cursor-not-allowed hover:bg-transparent" : "hover:bg-red-500/5"
+                      }`}
+                      title={u.role === "owner" ? "Owners cannot be banned" : "Ban"}
                     >
                       <Ban className="w-3 h-3 text-red-400/60" />
                     </button>
@@ -294,12 +300,12 @@ export default function AdminUsers() {
                 <div className="flex flex-col gap-4">
                   <div className="grid grid-cols-2 gap-4">
                     {[
-                      { label: "Email", value: (userDetail.user as any)?.email || "—" },
+                      { label: "Email", value: (userDetail.user as any)?.email || "-" },
                       { label: "Role", value: (userDetail.user as any)?.role || "user" },
                       { label: "Status", value: (userDetail.user as any)?.status || "active" },
                       { label: "Balance", value: `${userDetail.balance} credits` },
-                      { label: "ID", value: (userDetail.user as any)?.id || "—" },
-                      { label: "Created", value: (userDetail.user as any)?.created_at ? new Date((userDetail.user as any).created_at).toLocaleDateString() : "—" },
+                      { label: "ID", value: (userDetail.user as any)?.id || "-" },
+                      { label: "Created", value: (userDetail.user as any)?.created_at ? new Date((userDetail.user as any).created_at).toLocaleDateString() : "-" },
                     ].map((field, i) => (
                       <div key={i} className="flex flex-col gap-1.5">
                         <span className="font-sans font-normal text-[11px] text-white/50 uppercase tracking-[0.06em]">{field.label}</span>

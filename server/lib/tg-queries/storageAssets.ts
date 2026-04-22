@@ -5,7 +5,8 @@ export function toApiServedAssetUrl(path: string | null | undefined): string | n
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return path;
   }
-  return `${STORAGE_BASE_URL}/${path}`;
+  const cleaned = path.replace(/^\/api\/(images|assets)\//, "");
+  return `${STORAGE_BASE_URL}/${cleaned}`;
 }
 
 export function toStoragePath(entityType: string, entityId: string, filename: string): string {

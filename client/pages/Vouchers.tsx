@@ -4,6 +4,7 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { Ticket, Gift, ArrowDownRight } from "lucide-react";
 
@@ -33,7 +34,7 @@ export default function Vouchers() {
     },
     onError: (e) => {
       setProcessing(false);
-      toast.error(e.message);
+      toast.error(getUserFriendlyErrorMessage(e));
     },
   });
 

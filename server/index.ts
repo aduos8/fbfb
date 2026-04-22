@@ -12,11 +12,17 @@ import { startTrackingMonitor, stopTrackingMonitor } from "./lib/trackingMonitor
 import { appRouter } from "./trpc/router";
 import { createContext } from "./trpc/context";
 import oxapayWebhook from "./routes/webhooks/oxapay";
+import { handleAssets } from "./routes/assets";
 import path from "path";
 
 export function createServer() {
   const app = express();
   const isVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (isProd && !isVercel) {
+    app.set("trust proxy", 1);
+  }
 
   app.use(helmet({
     contentSecurityPolicy: {
@@ -37,7 +43,7 @@ export function createServer() {
 
   app.use(cors({
     origin: (origin, callback) => {
-      const allowedOrigins = process.env.NODE_ENV === "production"
+      const allowedOrigins = isProd
         ? (process.env.ALLOWED_ORIGINS?.split(",") ?? ["https://yourdomain.com"])
         : ["http://localhost:3000", "http://localhost:5173", "http://localhost:8082"];
       if (!origin || allowedOrigins.includes(origin)) {
@@ -60,7 +66,16 @@ export function createServer() {
     message: { error: "Too many requests, please try again later." },
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => req.path === "/api/ping",
+    skip: (req) => {
+      const p = req.path;
+      // Never rate-limit static frontend assets. If these get limited, browsers will try to
+      // interpret the JSON error body as CSS/JS (MIME type errors + blank pages).
+      if (p === "/api/ping") return true;
+      if (p === "/health" || p === "/api/health") return true;
+      if (p.startsWith("/assets/")) return true;
+      if (p === "/favicon.ico" || p === "/robots.txt" || p === "/sitemap.xml") return true;
+      return false;
+    },
   });
 
   app.use(globalLimiter);
@@ -145,9 +160,11 @@ export function createServer() {
       },
     });
   });
-
+  
   app.get("/api/demo", handleDemo);
   app.post("/api/demo", express.json({ limit: "10kb" }), handleDemo);
+
+  app.use("/api/assets", handleAssets);
 
   app.post("/api/webhooks/oxapay", express.json({ limit: "10kb" }), oxapayWebhook);
 

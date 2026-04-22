@@ -21,28 +21,6 @@ import {
   type HistoryRecordLight,
 } from "./queries";
 
-const INDEX_TASK_TIMEOUT = 600_000;
-const DEFAULT_BATCH_SIZE = 5000;
-const DEFAULT_UPLOAD_CONCURRENCY = 8;
-const DEFAULT_CASSANDRA_PAGE_SIZE = 10000;
-const DEFAULT_FLUSH_MULTIPLIER = 4;
-const DEFAULT_CHAT_SCAN_CONCURRENCY = 4;
-const DEFAULT_USER_SCAN_CONCURRENCY = 4;
-const VALID_MESSAGE_PHASES = ["messages_by_chat", "messages_by_user", "messages_by_id"] as const;
-
-type MessagePhase = typeof VALID_MESSAGE_PHASES[number];
-
-type IndexerConfig = {
-  batchSize: number;
-  uploadConcurrency: number;
-  cassandraPageSize: number;
-  flushMultiplier: number;
-  chatScanConcurrency: number;
-  userScanConcurrency: number;
-  reindexPhases: MessagePhase[];
-  syncPhases: MessagePhase[];
-};
-
 type ProfileDocument = {
   userId: string;
   username: string | null;
@@ -127,95 +105,6 @@ function chunkArray<T>(values: T[], chunkSize: number) {
   return chunks;
 }
 
-function readPositiveIntEnv(name: string, fallback: number) {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.warn(`[indexer] ignoring invalid ${name}="${raw}"`);
-    return fallback;
-  }
-
-  return parsed;
-}
-
-function parseMessagePhases(name: string, fallback: MessagePhase[]) {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-
-  const phases = raw
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value): value is MessagePhase =>
-      (VALID_MESSAGE_PHASES as readonly string[]).includes(value)
-    );
-
-  if (phases.length === 0) {
-    console.warn(`[indexer] ignoring invalid ${name}="${raw}"`);
-    return fallback;
-  }
-
-  return Array.from(new Set(phases));
-}
-
-function getIndexerConfig(): IndexerConfig {
-  return {
-    batchSize: readPositiveIntEnv("SEARCH_INDEX_BATCH_SIZE", DEFAULT_BATCH_SIZE),
-    uploadConcurrency: readPositiveIntEnv("SEARCH_INDEX_UPLOAD_CONCURRENCY", DEFAULT_UPLOAD_CONCURRENCY),
-    cassandraPageSize: readPositiveIntEnv("SEARCH_INDEX_CASSANDRA_PAGE_SIZE", DEFAULT_CASSANDRA_PAGE_SIZE),
-    flushMultiplier: readPositiveIntEnv("SEARCH_INDEX_FLUSH_MULTIPLIER", DEFAULT_FLUSH_MULTIPLIER),
-    chatScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_CHAT_SCAN_CONCURRENCY", DEFAULT_CHAT_SCAN_CONCURRENCY),
-    userScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_USER_SCAN_CONCURRENCY", DEFAULT_USER_SCAN_CONCURRENCY),
-    reindexPhases: parseMessagePhases(
-      "SEARCH_INDEX_REINDEX_PHASES",
-      ["messages_by_chat", "messages_by_user", "messages_by_id"]
-    ),
-    syncPhases: parseMessagePhases(
-      "SEARCH_INDEX_SYNC_PHASES",
-      ["messages_by_chat", "messages_by_user", "messages_by_id"]
-    ),
-  };
-}
-
-async function runWithConcurrency<T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<void>
-): Promise<void> {
-  let running = 0;
-  let nextIndex = 0;
-
-  return new Promise<void>((resolve, reject) => {
-    function tryNext() {
-      while (running < concurrency && nextIndex < items.length) {
-        const idx = nextIndex++;
-        running++;
-        fn(items[idx], idx)
-          .then(() => {
-            running--;
-            if (nextIndex >= items.length && running === 0) {
-              resolve();
-            } else {
-              tryNext();
-            }
-          })
-          .catch(reject);
-      }
-
-      if (items.length === 0) {
-        resolve();
-      }
-    }
-
-    tryNext();
-  });
-}
-
 export function buildProfileDocuments(users: UserRecord[], historyMap?: Map<string, HistoryRecordLight[]>): ProfileDocument[] {
   return users.map((user) => {
     const historyRecords = historyMap?.get(user.user_id) || [];
@@ -262,11 +151,10 @@ export function buildChatDocuments(chats: ChatRecord[]): ChatDocument[] {
   }));
 }
 
-export function buildMessageDocumentsFromMaps(
-  messages: MessageRecord[],
-  userMap: Map<string, UserRecord>,
-  chatMap: Map<string, ChatRecord>
-): MessageDocument[] {
+export function buildMessageDocuments(messages: MessageRecord[], users: UserRecord[], chats: ChatRecord[]): MessageDocument[] {
+  const userMap = new Map(users.map((user) => [user.user_id, user]));
+  const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
+
   return messages.map((message) => {
     const sender = message.user_id ? userMap.get(message.user_id) : null;
     const chat = chatMap.get(message.chat_id);
@@ -292,68 +180,49 @@ export function buildMessageDocumentsFromMaps(
   });
 }
 
-export function buildMessageDocuments(messages: MessageRecord[], users: UserRecord[], chats: ChatRecord[]): MessageDocument[] {
-  const userMap = new Map(users.map((user) => [user.user_id, user]));
-  const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
-  return buildMessageDocumentsFromMaps(messages, userMap, chatMap);
-}
+const INDEX_TASK_TIMEOUT = 600_000;
+const BATCH_SIZE = 5000;
+const CASSANDRA_PAGE_SIZE = 10000;
 
 /**
- * Upload document chunks to Meilisearch with bounded parallelism so we keep
- * throughput high without opening an unbounded number of tasks.
+ * Upload document chunks to Meilisearch, verifying each batch completes.
+ * Uses 5k batch size to reduce HTTP round-trips while ensuring no data loss.
  */
-async function uploadDocumentsConcurrently<T extends Record<string, unknown>>(
+async function uploadDocuments<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
-  uploadFn: typeof replaceDocuments | typeof updateDocuments,
-  config: IndexerConfig
+  uploadFn: typeof replaceDocuments | typeof updateDocuments
 ) {
-  const chunks = chunkArray(documents, config.batchSize);
-  console.log(
-    `[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches ` +
-    `(concurrency: ${config.uploadConcurrency})...`
-  );
+  const chunks = chunkArray(documents, BATCH_SIZE);
+  console.log(`[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches...`);
 
-  let completed = 0;
-  await runWithConcurrency(chunks, config.uploadConcurrency, async (chunk, idx) => {
+  let uploaded = 0;
+  for (const chunk of chunks) {
     const task = await uploadFn(indexName, chunk);
     await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
-    completed += chunk.length;
-    if (completed % 50000 < config.batchSize || idx === chunks.length - 1) {
-      console.log(`[indexer] "${indexName}": ${completed}/${documents.length} docs`);
+    uploaded += chunk.length;
+    if (uploaded % 50000 < BATCH_SIZE || uploaded === documents.length) {
+      console.log(`[indexer] "${indexName}": ${uploaded}/${documents.length} docs`);
     }
-  });
+  }
 }
 
-async function replaceIndexDocuments<T extends Record<string, unknown>>(
-  indexName: string,
-  documents: T[],
-  config: IndexerConfig
-) {
+async function replaceIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
   console.log(`[indexer] replacing ${documents.length} documents in "${indexName}"...`);
   const deleteTask = await deleteAllDocuments(indexName);
   await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
-  await uploadDocumentsConcurrently(indexName, documents, replaceDocuments, config);
+  await uploadDocuments(indexName, documents, replaceDocuments);
 }
 
-async function syncIndexDocuments<T extends Record<string, unknown>>(
-  indexName: string,
-  documents: T[],
-  config: IndexerConfig
-) {
+async function syncIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
   console.log(`[indexer] syncing ${documents.length} documents into "${indexName}"...`);
-  await uploadDocumentsConcurrently(indexName, documents, updateDocuments, config);
-}
-
-function getMessagePhases(mode: "replace" | "sync", config: IndexerConfig): MessagePhase[] {
-  return mode === "replace" ? config.reindexPhases : config.syncPhases;
+  await uploadDocuments(indexName, documents, updateDocuments);
 }
 
 async function streamIndexMessages(
   userMap: Map<string, UserRecord>,
   chatMap: Map<string, ChatRecord>,
-  mode: "replace" | "sync",
-  config: IndexerConfig
+  mode: "replace" | "sync"
 ) {
   if (mode === "replace") {
     console.log(`[indexer] clearing messages index before streaming...`);
@@ -363,25 +232,27 @@ async function streamIndexMessages(
 
   let totalIndexed = 0;
   let pendingDocs: MessageDocument[] = [];
+  const usersArray = Array.from(userMap.values());
+  const chatsArray = Array.from(chatMap.values());
   const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
-  const phases = getMessagePhases(mode, config);
 
   // Track seen messages to deduplicate across tables
   const seen = new Set<string>();
 
   // Buffer multiple Cassandra pages, then flush in 5k batches
-  const flushThreshold = config.batchSize * config.flushMultiplier;
+  const FLUSH_THRESHOLD = BATCH_SIZE * 4; // ~20k docs
 
   async function flush() {
     if (pendingDocs.length === 0) return;
     const toUpload = pendingDocs;
     pendingDocs = [];
 
-    const chunks = chunkArray(toUpload, config.batchSize);
-    await runWithConcurrency(chunks, config.uploadConcurrency, async (chunk) => {
+    const chunks = chunkArray(toUpload, BATCH_SIZE);
+
+    for (const chunk of chunks) {
       const task = await uploadFn(SEARCH_INDEXES.messages, chunk);
       await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
-    });
+    }
 
     totalIndexed += toUpload.length;
     console.log(`[indexer] messages: ${totalIndexed} indexed (${seen.size} unique seen)...`);
@@ -395,51 +266,45 @@ async function streamIndexMessages(
       return true;
     });
     if (newMessages.length === 0) return [];
-    return buildMessageDocumentsFromMaps(newMessages, userMap, chatMap);
+    return buildMessageDocuments(newMessages, usersArray, chatsArray);
   }
 
-  for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex++) {
-    const phase = phases[phaseIndex];
-    const phaseLabel = `phase ${phaseIndex + 1}/${phases.length}`;
-    const phaseStartCount = totalIndexed;
-
-    if (phase === "messages_by_chat") {
-      const chatIds = Array.from(chatMap.keys());
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (${chatIds.length} chats)...`);
-      for await (const messagePage of streamAllMessagesFromChats(chatIds, {
-        fetchSize: config.cassandraPageSize,
-        concurrency: config.chatScanConcurrency,
-      })) {
-        if (messagePage.length === 0) continue;
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) pendingDocs.push(...documents);
-        if (pendingDocs.length >= flushThreshold) await flush();
-      }
-    } else if (phase === "messages_by_user") {
-      const userIds = Array.from(userMap.keys());
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (${userIds.length} users)...`);
-      for await (const messagePage of streamAllMessagesFromUsers(userIds, {
-        fetchSize: config.cassandraPageSize,
-        concurrency: config.userScanConcurrency,
-      })) {
-        if (messagePage.length === 0) continue;
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) pendingDocs.push(...documents);
-        if (pendingDocs.length >= flushThreshold) await flush();
-      }
-    } else {
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_id...`);
-      for await (const messagePage of streamAllMessages(config.cassandraPageSize)) {
-        if (messagePage.length === 0) continue;
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) pendingDocs.push(...documents);
-        if (pendingDocs.length >= flushThreshold) await flush();
-      }
-    }
-
-    await flush();
-    console.log(`[indexer] ${phaseLabel} complete: +${totalIndexed - phaseStartCount} new from ${phase}`);
+  // === Phase 1: messages_by_chat (largest source) ===
+  const chatIds = Array.from(chatMap.keys());
+  console.log(`[indexer] phase 1/3: streaming messages_by_chat (${chatIds.length} chats)...`);
+  for await (const messagePage of streamAllMessagesFromChats(chatIds, CASSANDRA_PAGE_SIZE)) {
+    if (messagePage.length === 0) continue;
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
   }
+  await flush();
+  console.log(`[indexer] phase 1 complete: ${totalIndexed} messages from messages_by_chat`);
+
+  // === Phase 2: messages_by_user (catches user-partitioned messages missed above) ===
+  const userIds = Array.from(userMap.keys());
+  console.log(`[indexer] phase 2/3: streaming messages_by_user (${userIds.length} users)...`);
+  const prePhase2 = totalIndexed;
+  for await (const messagePage of streamAllMessagesFromUsers(userIds, CASSANDRA_PAGE_SIZE)) {
+    if (messagePage.length === 0) continue;
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
+  }
+  await flush();
+  console.log(`[indexer] phase 2 complete: +${totalIndexed - prePhase2} new from messages_by_user`);
+
+  // === Phase 3: messages_by_id (catches any remaining) ===
+  console.log(`[indexer] phase 3/3: streaming messages_by_id...`);
+  const prePhase3 = totalIndexed;
+  for await (const messagePage of streamAllMessages(CASSANDRA_PAGE_SIZE)) {
+    if (messagePage.length === 0) continue;
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
+  }
+  await flush();
+  console.log(`[indexer] phase 3 complete: +${totalIndexed - prePhase3} new from messages_by_id`);
 
   console.log(`[indexer] messages: ALL PHASES DONE — ${totalIndexed} total documents indexed (${seen.size} unique messages)`);
   return totalIndexed;
@@ -469,13 +334,6 @@ export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | 
 export async function reindexSearchDocuments() {
   console.log("[indexer] === FULL REINDEX START ===");
   const startTime = Date.now();
-  const config = getIndexerConfig();
-  console.log(
-    `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
-    `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
-    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
-    `messagePhases=${config.reindexPhases.join(" -> ")}`
-  );
 
   await configureSearchIndices();
 
@@ -494,9 +352,9 @@ export async function reindexSearchDocuments() {
   // Index all three types in parallel — each one clears its own index independently
   console.log("[indexer] indexing profiles, chats, and messages in parallel...");
   const [,, messageCount] = await Promise.all([
-    replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap), config),
-    replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats), config),
-    streamIndexMessages(userMap, chatMap, "replace", config),
+    replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap)),
+    replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats)),
+    streamIndexMessages(userMap, chatMap, "replace"),
   ]);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -515,13 +373,6 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
 
   console.log(`[indexer] === SYNC START (${normalizedScopes.join(", ")}) ===`);
   const startTime = Date.now();
-  const config = getIndexerConfig();
-  console.log(
-    `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
-    `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
-    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
-    `messagePhases=${config.syncPhases.join(" -> ")}`
-  );
 
   await configureSearchIndices();
 
@@ -541,17 +392,17 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
   if (normalizedScopes.includes("profiles")) {
     const userIds = users.map(u => u.user_id);
     const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
-    await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap), config);
+    await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));
     profileCount = users.length;
   }
   if (normalizedScopes.includes("chats")) {
-    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats), config);
+    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
     chatCount = chats.length;
   }
   if (normalizedScopes.includes("messages")) {
     const userMap = new Map(users.map(u => [u.user_id, u]));
     const chatMap = new Map(chats.map(c => [c.chat_id, c]));
-    messageCount = await streamIndexMessages(userMap, chatMap, "sync", config);
+    messageCount = await streamIndexMessages(userMap, chatMap, "sync");
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

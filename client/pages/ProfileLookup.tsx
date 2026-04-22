@@ -119,8 +119,6 @@ export default function ProfileLookup() {
   const historyData = history as UserHistoryResponse | undefined;
   const currentTracking = (trackingState as { tracking?: TrackingRecord | null } | undefined)?.tracking ?? null;
 
-  const avatar = userData?.profilePhoto || `https://i.pravatar.cc/150?u=${userData?.telegramUserId || id}`;
-
   return (
     <div className="min-h-screen bg-[#0F0F11]">
       <div
@@ -164,7 +162,7 @@ export default function ProfileLookup() {
                 >
                   {userData.profilePhoto ? (
                     <img
-                      src={avatar}
+                      src={userData.profilePhoto}
                       alt={userData.displayName || userData.username || "User"}
                       className="w-full h-full object-cover"
                     />

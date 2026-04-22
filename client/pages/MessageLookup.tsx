@@ -76,13 +76,6 @@ export default function MessageLookup() {
           {message && !isLoading && (
             <div className="space-y-6">
               <div className="card-border-gradient rounded-[20px] p-6 md:p-8">
-                {isPreviewOnly && (
-                  <div className="mb-4 rounded-[10px] border border-[rgba(58,42,238,0.2)] bg-[rgba(58,42,238,0.08)] px-4 py-3">
-                    <p className="font-sans text-[12px] text-white/70">
-                      Full message record unavailable, showing the search preview instead.
-                    </p>
-                  </div>
-                )}
                 <div className="flex items-center gap-3 flex-wrap mb-4">
                   <span className="px-2 py-1 rounded text-[10px] font-medium bg-[rgba(58,42,238,0.2)] text-[#B8A8FF] uppercase">
                     {message.chat.type || "message"}
