@@ -183,43 +183,38 @@ const BATCH_SIZE = 5000;
 const CASSANDRA_PAGE_SIZE = 10000;
 
 /**
- * Enqueue all document chunks to Meilisearch rapidly without waiting between batches.
- * Meilisearch processes tasks sequentially internally, so we just fire them all
- * and then wait for the final task to complete — this is much faster than
- * waiting for each batch individually.
+ * Upload document chunks to Meilisearch, verifying each batch completes.
+ * Uses 5k batch size to reduce HTTP round-trips while ensuring no data loss.
  */
-async function enqueueDocuments<T extends Record<string, unknown>>(
+async function uploadDocuments<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
   uploadFn: typeof replaceDocuments | typeof updateDocuments
 ) {
   const chunks = chunkArray(documents, BATCH_SIZE);
-  console.log(`[indexer] enqueuing ${documents.length} docs to "${indexName}" in ${chunks.length} batches...`);
+  console.log(`[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches...`);
 
-  let lastTaskUid: number | null = null;
+  let uploaded = 0;
   for (const chunk of chunks) {
     const task = await uploadFn(indexName, chunk);
-    lastTaskUid = task.taskUid;
+    await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
+    uploaded += chunk.length;
+    if (uploaded % 50000 < BATCH_SIZE || uploaded === documents.length) {
+      console.log(`[indexer] "${indexName}": ${uploaded}/${documents.length} docs`);
+    }
   }
-
-  // Only wait for the last task — Meilisearch processes them in order
-  if (lastTaskUid !== null) {
-    await waitForTask(lastTaskUid, INDEX_TASK_TIMEOUT);
-  }
-
-  console.log(`[indexer] "${indexName}": ${documents.length} documents enqueued and processed`);
 }
 
 async function replaceIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
   console.log(`[indexer] replacing ${documents.length} documents in "${indexName}"...`);
   const deleteTask = await deleteAllDocuments(indexName);
   await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
-  await enqueueDocuments(indexName, documents, replaceDocuments);
+  await uploadDocuments(indexName, documents, replaceDocuments);
 }
 
 async function syncIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
   console.log(`[indexer] syncing ${documents.length} documents into "${indexName}"...`);
-  await enqueueDocuments(indexName, documents, updateDocuments);
+  await uploadDocuments(indexName, documents, updateDocuments);
 }
 
 async function streamIndexMessages(
@@ -239,8 +234,8 @@ async function streamIndexMessages(
   const chatsArray = Array.from(chatMap.values());
   const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
 
-  // Buffer multiple Cassandra pages, then flush as one big concurrent enqueue
-  const FLUSH_THRESHOLD = BATCH_SIZE * 8; // ~40k docs
+  // Buffer multiple Cassandra pages, then flush in 5k batches
+  const FLUSH_THRESHOLD = BATCH_SIZE * 4; // ~20k docs
 
   async function flush() {
     if (pendingDocs.length === 0) return;
@@ -248,17 +243,10 @@ async function streamIndexMessages(
     pendingDocs = [];
 
     const chunks = chunkArray(toUpload, BATCH_SIZE);
-    let lastTaskUid: number | null = null;
 
-    // Fire all chunks rapidly
     for (const chunk of chunks) {
       const task = await uploadFn(SEARCH_INDEXES.messages, chunk);
-      lastTaskUid = task.taskUid;
-    }
-
-    // Wait only for the last task
-    if (lastTaskUid !== null) {
-      await waitForTask(lastTaskUid, INDEX_TASK_TIMEOUT);
+      await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
     }
 
     totalIndexed += toUpload.length;
