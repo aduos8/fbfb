@@ -32,10 +32,16 @@ export default defineConfig({
         // External dependencies that should not be bundled
         "express",
         "cors",
+        "helmet",
+        "express-rate-limit",
         "postgres",
+        "cassandra-driver",
         "bcryptjs",
+        "dotenv/config",
         "@trpc/server",
+        "@trpc/server/adapters/express",
         "zod",
+        "ssh2-sftp-client",
       ],
       output: {
         format: "es",

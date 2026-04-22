@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { Ticket, RefreshCw } from "lucide-react";
 
@@ -39,7 +40,7 @@ export default function AdminVouchers() {
       setMaxRedemptations("");
       refetch();
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   const disableMutation = trpc.admin.vouchers.disable.useMutation({
@@ -48,7 +49,7 @@ export default function AdminVouchers() {
       refetch();
       setSelectedVoucher(null);
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   useEffect(() => {

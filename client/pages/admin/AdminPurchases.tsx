@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { ShoppingBag, RefreshCw, RotateCcw } from "lucide-react";
 
@@ -11,7 +12,7 @@ export default function AdminPurchases() {
   const { data, refetch } = trpc.admin.purchases.list.useQuery({ status: statusFilter as any });
   const refundMutation = trpc.admin.purchases.refund.useMutation({
     onSuccess: () => { toast.success("Purchase refunded"); refetch(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   useEffect(() => {
@@ -95,7 +96,7 @@ export default function AdminPurchases() {
                 </td>
                 <td className="px-4 py-4">
                   <span className="font-sans font-normal text-[12px] text-white/40">
-                    {p.purchased_at ? new Date(p.purchased_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                    {p.purchased_at ? new Date(p.purchased_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "-"}
                   </span>
                 </td>
                 <td className="px-4 py-4">

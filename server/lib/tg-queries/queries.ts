@@ -227,7 +227,6 @@ export async function* streamAllUsers(fetchSize = 5000): AsyncGenerator<UserReco
   } while (pageState);
 }
 
-// Chat queries
 export async function getChatById(chatId: number | string): Promise<ChatRecord | null> {
   const client = getClient();
   const result = await client.execute(
@@ -321,7 +320,6 @@ export async function* streamAllChats(fetchSize = 5000): AsyncGenerator<ChatReco
   } while (pageState);
 }
 
-// Message queries
 export async function getMessageById(chatId: number | string, messageId: number | string): Promise<MessageRecord | null> {
   const client = getClient();
   const result = await client.execute(
@@ -609,16 +607,9 @@ function generateBuckets(startYear = 2013, startMonth = 1): string[] {
   return buckets;
 }
 
-async function* streamPartitionedMessages(
-  entityIds: string[],
-  fetchSizeOrOptions: number | PartitionStreamOptions | undefined,
-  config: {
-    label: string;
-    entityLabel: string;
-    progressEvery: number;
-    query: string;
-    buildParams: (entityId: string, bucket: string) => unknown[];
-  }
+export async function* streamAllMessagesFromChats(
+  chatIds: string[],
+  fetchSize = 5000
 ): AsyncGenerator<MessageRecord[]> {
   const client = getClient();
   const options = normalizePartitionStreamOptions(fetchSizeOrOptions);
@@ -627,75 +618,42 @@ async function* streamPartitionedMessages(
   const workerCount = Math.min(options.concurrency, Math.max(1, entityIds.length));
   let nextEntityIndex = 0;
   let totalYielded = 0;
-  let completedEntities = 0;
 
-  console.log(
-    `[${config.label}] scanning ${entityIds.length} ${config.entityLabel} × ${buckets.length} buckets ` +
-    `(concurrency: ${workerCount})...`
-  );
+  console.log(`[streamAllMessagesFromChats] scanning ${chatIds.length} chats × ${buckets.length} buckets...`);
 
-  async function worker() {
-    while (true) {
-      const entityIndex = nextEntityIndex++;
-      if (entityIndex >= entityIds.length) {
-        return;
-      }
+  for (let chatIdx = 0; chatIdx < chatIds.length; chatIdx++) {
+    const chatId = chatIds[chatIdx];
 
-      const entityId = entityIds[entityIndex];
+    for (const bucket of buckets) {
+      let pageState: Buffer | null = null;
 
-      for (const bucket of buckets) {
-        let pageState: Buffer | null = null;
-
-        do {
-          const result = await client.execute(
-            config.query,
-            config.buildParams(entityId, bucket),
-            {
-              prepare: true,
-              fetchSize: options.fetchSize,
-              pageState: pageState as any,
-            }
-          );
-
-          if (result.rows.length > 0) {
-            const rows = result.rows as unknown as MessageRecord[];
-            totalYielded += rows.length;
-            await queue.push(rows);
+      do {
+        const result = await client.execute(
+          "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat WHERE chat_id = ? AND bucket = ?",
+          [chatId, bucket],
+          {
+            prepare: true,
+            fetchSize,
+            pageState: pageState as any,
           }
-
-          pageState = (result as any).pageState ?? null;
-        } while (pageState);
-      }
-
-      completedEntities++;
-      if (completedEntities % config.progressEvery === 0 || completedEntities === entityIds.length) {
-        console.log(
-          `[${config.label}] processed ${completedEntities}/${entityIds.length} ${config.entityLabel} ` +
-          `(${totalYielded} messages so far)...`
         );
-      }
+
+        if (result.rows.length > 0) {
+          yield result.rows as unknown as MessageRecord[];
+          totalYielded += result.rows.length;
+        }
+
+        pageState = (result as any).pageState ?? null;
+      } while (pageState);
+    }
+
+    // Progress every 100 chats
+    if ((chatIdx + 1) % 100 === 0) {
+      console.log(`[streamAllMessagesFromChats] processed ${chatIdx + 1}/${chatIds.length} chats (${totalYielded} messages so far)...`);
     }
   }
 
-  const workerPromise = (async () => {
-    try {
-      await Promise.all(Array.from({ length: workerCount }, () => worker()));
-      queue.close();
-    } catch (error) {
-      queue.fail(error);
-    }
-  })();
-
-  while (true) {
-    const item = await queue.next();
-    if (item.done) {
-      break;
-    }
-    yield item.value;
-  }
-
-  await workerPromise;
-  console.log(`[${config.label}] done: ${totalYielded} total messages from ${entityIds.length} ${config.entityLabel}`);
+  console.log(`[streamAllMessagesFromChats] done: ${totalYielded} total messages from ${chatIds.length} chats`);
 }
 
 /**
@@ -722,7 +680,7 @@ export async function* streamAllMessagesFromChats(
  */
 export async function* streamAllMessagesFromUsers(
   userIds: string[],
-  fetchSizeOrOptions: number | PartitionStreamOptions = 5000
+  fetchSize = 5000
 ): AsyncGenerator<MessageRecord[]> {
   yield* streamPartitionedMessages(userIds, fetchSizeOrOptions, {
     label: "streamAllMessagesFromUsers",

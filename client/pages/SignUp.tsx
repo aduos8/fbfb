@@ -5,7 +5,7 @@ import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
-import { isAuthenticated } from "@/lib/auth";
+import { isAuthenticated } from "@/lib/auth";import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 
 export default function SignUp() {
@@ -36,7 +36,7 @@ export default function SignUp() {
       navigate("/dashboard");
     },
     onError: (err) => {
-      setError(err.message || "Registration failed");
+      setError(getUserFriendlyErrorMessage(err, "Registration failed"));
       setLoading(false);
     },
   });

@@ -3,8 +3,9 @@ import gsap from "gsap";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 
 export default function Verify2FA() {
@@ -16,9 +17,12 @@ export default function Verify2FA() {
   const backRef = useRef<HTMLButtonElement>(null);
   const navScrollRef = useNavbarScroll();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const useBackup = searchParams.get("mode") === "backup";
+  const [backupCode, setBackupCode] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -42,6 +46,18 @@ export default function Verify2FA() {
     return () => ctx.revert();
   }, []);
 
+  const backupMutation = trpc.auth.useBackupCode.useMutation({
+    onSuccess: (data) => {
+      sessionStorage.removeItem("pending_2fa_userId");
+      toast.success("Welcome back!");
+      navigate("/dashboard");
+    },
+    onError: (err) => {
+      setError(getUserFriendlyErrorMessage(err, "Invalid backup code"));
+      setLoading(false);
+    },
+  });
+
   const verifyMutation = trpc.auth.verify2FA.useMutation({
     onSuccess: (data) => {
       sessionStorage.removeItem("pending_2fa_userId");
@@ -49,7 +65,7 @@ export default function Verify2FA() {
       navigate("/dashboard");
     },
     onError: (err) => {
-      setError(err.message || "Invalid 2FA code");
+      setError(getUserFriendlyErrorMessage(err, "Invalid 2FA code"));
       setLoading(false);
     },
   });
@@ -66,7 +82,11 @@ export default function Verify2FA() {
       return;
     }
 
-    verifyMutation.mutate({ userId: pendingUserId, code });
+    if (useBackup) {
+      backupMutation.mutate({ userId: pendingUserId, code: backupCode });
+    } else {
+      verifyMutation.mutate({ userId: pendingUserId, code });
+    }
   };
 
   return (
@@ -111,28 +131,44 @@ export default function Verify2FA() {
                     </div>
                   )}
 
-                  <div>
-                    <label className="block font-sans font-normal text-white text-[15px] mb-[8px]">
-                      Verification code
-                    </label>
-                    <div className="bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] flex items-center px-[14px] input-glow" style={{ minHeight: "41px" }}>
-                      <input
-                        ref={inputRef}
-                        type="text"
-                        value={code}
-                        onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                        placeholder="000000"
-                        maxLength={6}
-                        required
-                        className="bg-transparent w-full h-full py-2.5 outline-none font-sans font-normal text-[14px] tracking-[0.3em] text-[rgba(255,255,255,0.65)] placeholder:text-[rgba(255,255,255,0.25)] placeholder:tracking-normal"
-                      />
+                  {!useBackup ? (
+                    <div>
+                      <label className="block font-sans font-normal text-white text-[15px] mb-[8px]">Verification code</label>
+                      <div className="bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] flex items-center px-[14px] input-glow" style={{ minHeight: "41px" }}>
+                        <input
+                          ref={inputRef}
+                          type="text"
+                          value={code}
+                          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                          placeholder="000000"
+                          maxLength={6}
+                          required
+                          className="bg-transparent w-full h-full py-2.5 outline-none font-sans font-normal text-[14px] tracking-[0.3em] text-[rgba(255,255,255,0.65)] placeholder:text-[rgba(255,255,255,0.25)] placeholder:tracking-normal"
+                        />
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div>
+                      <label className="block font-sans font-normal text-white text-[15px] mb-[8px]">Backup code</label>
+                      <div className="bg-[#232327] border border-[rgba(255,255,255,0.10)] rounded-[7px] flex items-center px-[14px] input-glow" style={{ minHeight: "41px" }}>
+                        <input
+                          autoFocus
+                          type="text"
+                          value={backupCode}
+                          onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
+                          placeholder="XXXXXXXX"
+                          maxLength={8}
+                          required
+                          className="bg-transparent w-full h-full py-2.5 outline-none font-sans font-normal text-[14px] tracking-[0.2em] text-[rgba(255,255,255,0.65)] placeholder:text-[rgba(255,255,255,0.25)] placeholder:tracking-normal"
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mt-2">
                     <button
                       type="submit"
-                      disabled={loading || code.length !== 6}
+                      disabled={loading || (!useBackup && code.length !== 6) || (useBackup && backupCode.length < 6)}
                       className="w-full h-[40px] rounded-[10px] bg-[#3A2AEE] text-white font-sans font-semibold text-[12px] border-r border-b border-l border-[rgba(255,255,255,0.20)] shadow-[inset_0px_2px_0.5px_0px_rgba(255,255,255,0.30)] hover:bg-[#6B5BFF] transition-colors btn-press disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {loading ? "Verifying..." : "Verify"}
@@ -141,16 +177,37 @@ export default function Verify2FA() {
                 </div>
               </form>
 
-              <button
-                ref={backRef}
-                onClick={() => {
-                  sessionStorage.removeItem("pending_2fa_userId");
-                  navigate("/login");
-                }}
-                className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.80)] hover:text-white transition-colors text-left mt-6 cursor-pointer bg-transparent border-0 p-0"
-              >
-                Back to sign in
-              </button>
+              <div className="flex flex-col gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    if (useBackup) {
+                      next.delete("mode");
+                    } else {
+                      next.set("mode", "backup");
+                    }
+                    setSearchParams(next, { replace: true });
+                    setError("");
+                    setCode("");
+                    setBackupCode("");
+                  }}
+                  className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.50)] hover:text-white transition-colors text-left cursor-pointer bg-transparent border-0 p-0"
+                >
+                  {useBackup ? "Use authenticator app instead" : "Use a backup code instead"}
+                </button>
+                <button
+                  type="button"
+                  ref={backRef}
+                  onClick={() => {
+                    sessionStorage.removeItem("pending_2fa_userId");
+                    navigate("/login");
+                  }}
+                  className="font-sans font-normal text-[12px] text-[rgba(255,255,255,0.80)] hover:text-white transition-colors text-left cursor-pointer bg-transparent border-0 p-0"
+                >
+                  Back to sign in
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -20,7 +20,6 @@ export default function ChannelLookup() {
   );
 
   const chatData = data as LookupChat | null;
-  const avatar = chatData?.profilePhoto || `https://i.pravatar.cc/150?u=${chatData?.telegramChatId || id}`;
   const subscriberCount = chatData?.subscriberCount ?? chatData?.participantCount ?? null;
   const showParticipantCount = chatData?.participantCount != null && chatData.participantCount !== subscriberCount;
 
@@ -51,7 +50,7 @@ export default function ChannelLookup() {
                 <div className="w-[80px] h-[80px] rounded-[14px] overflow-hidden bg-[rgba(58,42,238,0.15)] flex items-center justify-center">
                   {chatData.profilePhoto ? (
                     <img
-                      src={avatar}
+                      src={chatData.profilePhoto}
                       alt={chatData.title || "Channel"}
                       className="w-full h-full object-cover"
                     />
@@ -89,7 +88,7 @@ export default function ChannelLookup() {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <StatCard label="Subscribers" value={subscriberCount != null ? subscriberCount.toLocaleString() : "Unavailable"} />
+              <StatCard label="Subscribers" value={subscriberCount != null ? subscriberCount.toLocaleString() : "Unavailable"} />
                 {showParticipantCount && (
                   <StatCard label="Participants" value={chatData.participantCount!.toLocaleString()} />
                 )}

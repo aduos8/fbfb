@@ -17,10 +17,12 @@ async function request<T>(
   const merchantKey = getMerchantKey();
 
   if (!merchantKey) {
-    throw new Error("Payment provider is not configured.");
+    throw new Error('OXAPAY_MERCHANT_KEY is not configured. Please add OXAPAY_MERCHANT_KEY to your .env file.');
   }
 
   const cleanKey = merchantKey.trim();
+  console.log('[Oxapay] DEBUG - Key from env:', JSON.stringify(cleanKey));
+  console.log('[Oxapay] DEBUG - Key char codes:', Array.from(cleanKey).map(c => c.charCodeAt(0)));
 
   const fetchOptions: RequestInit = {
     ...options,
@@ -31,9 +33,12 @@ async function request<T>(
     },
   };
 
+  console.log('[Oxapay] DEBUG - Fetch options headers:', JSON.stringify(fetchOptions.headers));
+
   const res = await fetch(`${BASE_URL}${path}`, fetchOptions);
 
   const json = await res.json();
+  console.log('[Oxapay] Response:', res.status, JSON.stringify(json).slice(0, 300));
 
   if (json.status !== 200) {
     const err = json.error ?? { message: `Oxapay request failed` };

@@ -19,9 +19,17 @@ export const creditsRouter = t.router({
     const [row] = await sql<{ balance: number }[]>`
       SELECT balance FROM credits WHERE user_id = ${ctx.userId}
     `;
+    const [searchesRow] = await sql<{ count: string }[]>`
+      SELECT COUNT(*) AS count
+      FROM credit_transactions
+      WHERE user_id = ${ctx.userId}
+        AND type = 'credit_deducted'
+        AND reference LIKE 'search:%'
+    `;
     return {
       balance: Number(row?.balance ?? 0),
       credit_limit: DEFAULT_CREDIT_LIMIT,
+      total_searches: parseInt(searchesRow?.count ?? "0", 10),
     };
   }),
 
@@ -111,70 +119,83 @@ export const creditsRouter = t.router({
     .input(z.object({ code: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       const code = input.code.toUpperCase().trim();
+      const updatedBalance = await sql.begin(async (trx) => {
+        const [voucher] = await trx<{
+          id: string;
+          credits: number;
+          max_uses: number | null;
+          current_uses: number;
+          expires_at: Date | null;
+          active: boolean;
+        }[]>`
+          SELECT id, credits, max_uses, current_uses, expires_at, active
+          FROM vouchers
+          WHERE code = ${code}
+          FOR UPDATE
+        `;
 
-      const [voucher] = await sql<{
-        id: string;
-        credits: number;
-        max_uses: number | null;
-        current_uses: number;
-        expires_at: Date | null;
-        active: boolean;
-      }[]>`
-        SELECT id, credits, max_uses, current_uses, expires_at, active
-        FROM vouchers
-        WHERE code = ${code}
-      `;
+        if (!voucher) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Invalid voucher code" });
+        }
 
-      if (!voucher) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Invalid voucher code" });
-      }
+        if (!voucher.active) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher is no longer active" });
+        }
 
-      if (!voucher.active) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher is no longer active" });
-      }
+        if (voucher.expires_at && new Date(voucher.expires_at) < new Date()) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher has expired" });
+        }
 
-      if (voucher.expires_at && new Date(voucher.expires_at) < new Date()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher has expired" });
-      }
+        if (voucher.max_uses !== null && voucher.current_uses >= voucher.max_uses) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher has reached its usage limit" });
+        }
 
-      if (voucher.max_uses !== null && voucher.current_uses >= voucher.max_uses) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher has reached its usage limit" });
-      }
+        const [redemption] = await trx<{ id: string }[]>`
+          INSERT INTO voucher_redemptions (voucher_id, user_id)
+          VALUES (${voucher.id}, ${ctx.userId})
+          ON CONFLICT (voucher_id, user_id) DO NOTHING
+          RETURNING id
+        `;
 
-      const [existingRedemption] = await sql<{ id: string }[]>`
-        SELECT id FROM voucher_redemptions WHERE user_id = ${ctx.userId} AND voucher_id = ${voucher.id}
-      `;
+        if (!redemption) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You already redeemed this voucher code" });
+        }
 
-      if (voucher.max_uses === 1 && existingRedemption) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher already redeemed" });
-      }
+        const [usageUpdated] = await trx<{ id: string }[]>`
+          UPDATE vouchers
+          SET current_uses = current_uses + 1
+          WHERE id = ${voucher.id}
+            AND (max_uses IS NULL OR current_uses < max_uses)
+          RETURNING id
+        `;
 
-      await sql`
-        UPDATE credits SET balance = balance + ${voucher.credits}, updated_at = NOW()
-        WHERE user_id = ${ctx.userId}
-      `;
+        if (!usageUpdated) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Voucher has reached its usage limit" });
+        }
 
-      await sql`
-        INSERT INTO credit_transactions (user_id, amount, type, reference)
-        VALUES (${ctx.userId}, ${voucher.credits}, 'voucher_redemption', ${code})
-      `;
+        await trx`
+          UPDATE credits SET balance = balance + ${voucher.credits}, updated_at = NOW()
+          WHERE user_id = ${ctx.userId}
+        `;
 
-      await sql`
-        INSERT INTO voucher_redemptions (voucher_id, user_id)
-        VALUES (${voucher.id}, ${ctx.userId})
-      `;
+        await trx`
+          INSERT INTO credit_transactions (user_id, amount, type, reference)
+          VALUES (${ctx.userId}, ${voucher.credits}, 'voucher_redemption', ${code})
+        `;
 
-      await sql`
-        UPDATE vouchers SET current_uses = current_uses + 1 WHERE id = ${voucher.id}
-      `;
+        const [balanceRow] = await trx<{ balance: number }[]>`
+          SELECT balance FROM credits WHERE user_id = ${ctx.userId}
+        `;
 
-      const [updatedBalance] = await sql<{ balance: number }[]>`
-        SELECT balance FROM credits WHERE user_id = ${ctx.userId}
-      `;
+        return {
+          creditsAdded: voucher.credits,
+          newBalance: balanceRow?.balance ?? 0,
+        };
+      });
 
       return {
-        creditsAdded: voucher.credits,
-        newBalance: updatedBalance?.balance ?? 0,
+        creditsAdded: updatedBalance.creditsAdded,
+        newBalance: updatedBalance.newBalance,
       };
     }),
 });

@@ -61,10 +61,16 @@ export default async function handler(req: Request, res: Response) {
 
       if (session.credits > 0) {
         await sql.begin(async (trx) => {
-          await trx`
+          const [updated] = await trx<{ balance: number }[]>`
             UPDATE credits SET balance = balance + ${session.credits}, updated_at = NOW()
-            WHERE user_id = ${session.user_id}
+            WHERE user_id = ${session.user_id} AND balance + ${session.credits} <= 5000
+            RETURNING balance
           `;
+
+          if (!updated) {
+            console.log('[Oxapay Webhook] Credit cap reached for user:', session.user_id, '— marking for manual handling');
+            return;
+          }
 
           await trx`
             INSERT INTO credit_transactions (user_id, amount, type, reference, notes)

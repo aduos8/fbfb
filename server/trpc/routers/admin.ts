@@ -27,6 +27,21 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
+async function getTargetUserOrThrow(userId: string) {
+  const [target] = await sql<{ id: string; role: string }[]>`
+    SELECT id, role
+    FROM users
+    WHERE id = ${userId}
+    LIMIT 1
+  `;
+
+  if (!target) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+  }
+
+  return target;
+}
+
 export const adminRouter = t.router({
   users: t.router({
     list: adminProcedure
@@ -127,6 +142,15 @@ export const adminRouter = t.router({
     suspend: adminProcedure
       .input(z.object({ id: z.string().uuid(), reason: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
+        if (input.id === ctx.userId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot suspend your own account" });
+        }
+
+        const target = await getTargetUserOrThrow(input.id);
+        if (target.role === "owner") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Owner accounts cannot be suspended" });
+        }
+
         await sql`
           UPDATE users SET status = 'suspended', updated_at = NOW()
           WHERE id = ${input.id}
@@ -157,6 +181,15 @@ export const adminRouter = t.router({
     ban: adminProcedure
       .input(z.object({ id: z.string().uuid(), reason: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
+        if (input.id === ctx.userId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot ban your own account" });
+        }
+
+        const target = await getTargetUserOrThrow(input.id);
+        if (target.role === "owner") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Owner accounts cannot be banned" });
+        }
+
         await sql`
           UPDATE users SET status = 'banned', updated_at = NOW()
           WHERE id = ${input.id}
@@ -217,7 +250,6 @@ export const adminRouter = t.router({
         if (input.id === ctx.userId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot change your own role" });
         }
-
         const [targetUser] = await sql<{ role: string }[]>`
           SELECT role FROM users WHERE id = ${input.id}
         `;
@@ -232,7 +264,6 @@ export const adminRouter = t.router({
         if ((targetIsOwner || assigningOwner) && !actorIsOwner) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can manage owner roles" });
         }
-
         await sql`
           UPDATE users SET role = ${input.role}, updated_at = NOW()
           WHERE id = ${input.id}

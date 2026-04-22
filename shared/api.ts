@@ -256,7 +256,7 @@ export const FrequentWordSchema = z.object({
 export type FrequentWord = z.infer<typeof FrequentWordSchema>;
 
 export const UserAnalyticsSchema = z.object({
-  userId: z.string(),
+  userId: z.string().nullable(),
   bucket: z.string(),
   activeChats: z.array(ChatActivityEntrySchema),
   frequentWords: z.array(FrequentWordSchema),

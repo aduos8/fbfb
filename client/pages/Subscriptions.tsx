@@ -190,7 +190,7 @@ export default function Subscriptions() {
                         {planMap[item.plan_code]?.name || item.plan_code || "Purchase"} #{item.id?.slice(0, 8) || i + 1}
                       </p>
                       <p className="font-sans font-normal text-[10px] text-white/30">
-                        {item.created_at ? new Date(item.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "—"}
+                        {item.created_at ? new Date(item.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "-"}
                       </p>
                     </div>
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold capitalize ${

@@ -10,7 +10,7 @@ export function getToken(): string | null {
   return match ? decodeURIComponent(match.slice(prefix.length)) : null;
 }
 
-export function setToken(_t: string): void {
+export function setToken(t: string): void {
   if (typeof document === "undefined") return;
   document.cookie = `${K}=1; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax`;
 }

@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import gsap from "gsap";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { Plus, Minus } from "lucide-react";
 
@@ -23,11 +24,11 @@ export default function AdminCredits() {
 
   const adjustMutation = trpc.admin.credits.adjust.useMutation({
     onSuccess: () => { toast.success("Credits adjusted"); setAmount(""); setReason(""); setTargetEmail(""); setTargetUserId(""); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
   const setBalanceMutation = trpc.admin.credits.setBalance.useMutation({
     onSuccess: () => { toast.success("Balance set"); setAmount(""); setReason(""); setTargetEmail(""); setTargetUserId(""); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(getUserFriendlyErrorMessage(e)),
   });
 
   useEffect(() => {

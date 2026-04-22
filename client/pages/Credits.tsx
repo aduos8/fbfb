@@ -5,6 +5,7 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { trpc } from "@/lib/trpc";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
 import { Coins, ArrowUpRight, Plus, ShoppingBag, CreditCard, User, Gift, ChevronDown, X } from "lucide-react";
 
@@ -105,6 +106,14 @@ function getFriendlyDescription(txn: any): string {
         return query ? `${label} search: "${query}"` : `${label} search`;
       }
 
+      if (parsed.addon_name) {
+        return `Add-on purchase: ${parsed.addon_name}`;
+      }
+
+      if (parsed.entitlement_code) {
+        return `Add-on purchase (${String(parsed.entitlement_code).replace(/-/g, " ")})`;
+      }
+
       if (parsed.reason) return parsed.reason;
       if (parsed.description) return parsed.description;
     } catch {
@@ -176,14 +185,14 @@ export default function Credits() {
       setPurchasingPkg(null);
     },
     onError: (e) => {
-      toast.error(e.message);
+      toast.error(getUserFriendlyErrorMessage(e));
       setPurchasingPkg(null);
     },
   });
 
   const currentBalance = balanceData?.balance ?? 0;
   const creditLimit = balanceData?.credit_limit ?? 5000;
-  const progressPercent = (currentBalance / creditLimit) * 100;
+  const progressPercent = Math.min(100, (currentBalance / creditLimit) * 100);
 
   const allTransactions = (transactionsData?.transactions ?? []) as any[];
   const displayedTransactions = allTransactions.slice(0, displayCount);
