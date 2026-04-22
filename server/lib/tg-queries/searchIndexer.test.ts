@@ -76,6 +76,8 @@ beforeEach(() => {
   delete process.env.SEARCH_INDEX_UPLOAD_CONCURRENCY;
   delete process.env.SEARCH_INDEX_CASSANDRA_PAGE_SIZE;
   delete process.env.SEARCH_INDEX_FLUSH_MULTIPLIER;
+  delete process.env.SEARCH_INDEX_CHAT_SCAN_CONCURRENCY;
+  delete process.env.SEARCH_INDEX_USER_SCAN_CONCURRENCY;
 
   searchIndexMocks.configureSearchIndices.mockResolvedValue(undefined);
   searchIndexMocks.deleteAllDocuments.mockResolvedValue({ taskUid: 1 });
@@ -127,6 +129,14 @@ describe("searchIndexer phase selection", () => {
     expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledTimes(1);
     expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledTimes(1);
     expect(queryMocks.streamAllMessages).toHaveBeenCalledTimes(1);
+    expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledWith(
+      ["c1"],
+      expect.objectContaining({ fetchSize: 10000, concurrency: 4 })
+    );
+    expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledWith(
+      ["u1"],
+      expect.objectContaining({ fetchSize: 10000, concurrency: 4 })
+    );
     expect(searchIndexMocks.updateDocuments).toHaveBeenCalled();
     expect(result.messages).toBe(3);
   });
@@ -150,5 +160,21 @@ describe("searchIndexer phase selection", () => {
     expect(queryMocks.streamAllMessages).toHaveBeenCalledTimes(1);
     expect(searchIndexMocks.replaceDocuments).toHaveBeenCalled();
     expect(result.messages).toBe(3);
+  });
+
+  it("passes scan concurrency overrides through to the partitioned streams", async () => {
+    process.env.SEARCH_INDEX_CHAT_SCAN_CONCURRENCY = "6";
+    process.env.SEARCH_INDEX_USER_SCAN_CONCURRENCY = "3";
+
+    await reindexSearchDocuments();
+
+    expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledWith(
+      ["c1"],
+      expect.objectContaining({ fetchSize: 10000, concurrency: 6 })
+    );
+    expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledWith(
+      ["u1"],
+      expect.objectContaining({ fetchSize: 10000, concurrency: 3 })
+    );
   });
 });

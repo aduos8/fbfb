@@ -26,6 +26,8 @@ const DEFAULT_BATCH_SIZE = 5000;
 const DEFAULT_UPLOAD_CONCURRENCY = 8;
 const DEFAULT_CASSANDRA_PAGE_SIZE = 10000;
 const DEFAULT_FLUSH_MULTIPLIER = 4;
+const DEFAULT_CHAT_SCAN_CONCURRENCY = 4;
+const DEFAULT_USER_SCAN_CONCURRENCY = 4;
 const VALID_MESSAGE_PHASES = ["messages_by_chat", "messages_by_user", "messages_by_id"] as const;
 
 type MessagePhase = typeof VALID_MESSAGE_PHASES[number];
@@ -35,6 +37,8 @@ type IndexerConfig = {
   uploadConcurrency: number;
   cassandraPageSize: number;
   flushMultiplier: number;
+  chatScanConcurrency: number;
+  userScanConcurrency: number;
   reindexPhases: MessagePhase[];
   syncPhases: MessagePhase[];
 };
@@ -165,6 +169,8 @@ function getIndexerConfig(): IndexerConfig {
     uploadConcurrency: readPositiveIntEnv("SEARCH_INDEX_UPLOAD_CONCURRENCY", DEFAULT_UPLOAD_CONCURRENCY),
     cassandraPageSize: readPositiveIntEnv("SEARCH_INDEX_CASSANDRA_PAGE_SIZE", DEFAULT_CASSANDRA_PAGE_SIZE),
     flushMultiplier: readPositiveIntEnv("SEARCH_INDEX_FLUSH_MULTIPLIER", DEFAULT_FLUSH_MULTIPLIER),
+    chatScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_CHAT_SCAN_CONCURRENCY", DEFAULT_CHAT_SCAN_CONCURRENCY),
+    userScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_USER_SCAN_CONCURRENCY", DEFAULT_USER_SCAN_CONCURRENCY),
     reindexPhases: parseMessagePhases(
       "SEARCH_INDEX_REINDEX_PHASES",
       ["messages_by_chat", "messages_by_user", "messages_by_id"]
@@ -400,7 +406,10 @@ async function streamIndexMessages(
     if (phase === "messages_by_chat") {
       const chatIds = Array.from(chatMap.keys());
       console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (${chatIds.length} chats)...`);
-      for await (const messagePage of streamAllMessagesFromChats(chatIds, config.cassandraPageSize)) {
+      for await (const messagePage of streamAllMessagesFromChats(chatIds, {
+        fetchSize: config.cassandraPageSize,
+        concurrency: config.chatScanConcurrency,
+      })) {
         if (messagePage.length === 0) continue;
         const documents = deduplicateAndBuild(messagePage);
         if (documents.length > 0) pendingDocs.push(...documents);
@@ -409,7 +418,10 @@ async function streamIndexMessages(
     } else if (phase === "messages_by_user") {
       const userIds = Array.from(userMap.keys());
       console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (${userIds.length} users)...`);
-      for await (const messagePage of streamAllMessagesFromUsers(userIds, config.cassandraPageSize)) {
+      for await (const messagePage of streamAllMessagesFromUsers(userIds, {
+        fetchSize: config.cassandraPageSize,
+        concurrency: config.userScanConcurrency,
+      })) {
         if (messagePage.length === 0) continue;
         const documents = deduplicateAndBuild(messagePage);
         if (documents.length > 0) pendingDocs.push(...documents);
@@ -461,6 +473,7 @@ export async function reindexSearchDocuments() {
   console.log(
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
     `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
+    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
     `messagePhases=${config.reindexPhases.join(" -> ")}`
   );
 
@@ -506,6 +519,7 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
   console.log(
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
     `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
+    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
     `messagePhases=${config.syncPhases.join(" -> ")}`
   );
 
