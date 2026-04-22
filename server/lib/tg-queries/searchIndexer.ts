@@ -9,6 +9,7 @@ import {
 import { containsLink } from "./searchHelpers";
 import {
   listAllChats,
+  listAllMessages,
   listAllUsers,
   streamAllMessages,
   getUserHistoryForBatch,
@@ -17,22 +18,6 @@ import {
   type UserRecord,
   type HistoryRecordLight,
 } from "./queries";
-
-// ── Concurrency tuning ──────────────────────────────────────────────────
-// How many Meilisearch upload batches to fire concurrently.
-// Meilisearch queues tasks internally, so we can enqueue fast and let it process.
-const UPLOAD_CONCURRENCY = 8;
-
-// Documents per Meilisearch batch — larger = fewer HTTP round-trips
-const BATCH_SIZE = 5000;
-
-// Cassandra page size for streaming reads
-const CASSANDRA_PAGE_SIZE = 10000;
-
-// Task timeout (10 min)
-const INDEX_TASK_TIMEOUT = 600_000;
-
-// ── Document types ──────────────────────────────────────────────────────
 
 type ProfileDocument = {
   userId: string;
@@ -78,8 +63,6 @@ type MessageDocument = {
   timestampMs: number | null;
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────────
-
 function toIsoString(value: Date | string | null | undefined) {
   if (!value) {
     return null;
@@ -112,47 +95,13 @@ function getLatestHistoryValue(records: HistoryRecordLight[], field: string): st
 
 function chunkArray<T>(values: T[], chunkSize: number) {
   const chunks: T[][] = [];
+
   for (let index = 0; index < values.length; index += chunkSize) {
     chunks.push(values.slice(index, index + chunkSize));
   }
+
   return chunks;
 }
-
-/**
- * Run async tasks with bounded concurrency.
- * Fires up to `concurrency` tasks at a time, waits for a slot to free up before starting more.
- */
-async function runWithConcurrency<T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<void>
-): Promise<void> {
-  let running = 0;
-  let nextIndex = 0;
-
-  return new Promise<void>((resolve, reject) => {
-    function tryNext() {
-      while (running < concurrency && nextIndex < items.length) {
-        const idx = nextIndex++;
-        running++;
-        fn(items[idx], idx)
-          .then(() => {
-            running--;
-            if (nextIndex >= items.length && running === 0) {
-              resolve();
-            } else {
-              tryNext();
-            }
-          })
-          .catch(reject);
-      }
-      if (items.length === 0) resolve();
-    }
-    tryNext();
-  });
-}
-
-// ── Document builders ───────────────────────────────────────────────────
 
 export function buildProfileDocuments(users: UserRecord[], historyMap?: Map<string, HistoryRecordLight[]>): ProfileDocument[] {
   return users.map((user) => {
@@ -200,11 +149,10 @@ export function buildChatDocuments(chats: ChatRecord[]): ChatDocument[] {
   }));
 }
 
-export function buildMessageDocumentsFromMaps(
-  messages: MessageRecord[],
-  userMap: Map<string, UserRecord>,
-  chatMap: Map<string, ChatRecord>
-): MessageDocument[] {
+export function buildMessageDocuments(messages: MessageRecord[], users: UserRecord[], chats: ChatRecord[]): MessageDocument[] {
+  const userMap = new Map(users.map((user) => [user.user_id, user]));
+  const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
+
   return messages.map((message) => {
     const sender = message.user_id ? userMap.get(message.user_id) : null;
     const chat = chatMap.get(message.chat_id);
@@ -230,108 +178,98 @@ export function buildMessageDocumentsFromMaps(
   });
 }
 
-// Keep the old signature for backward compat
-export function buildMessageDocuments(messages: MessageRecord[], users: UserRecord[], chats: ChatRecord[]): MessageDocument[] {
-  const userMap = new Map(users.map((user) => [user.user_id, user]));
-  const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
-  return buildMessageDocumentsFromMaps(messages, userMap, chatMap);
-}
-
-// ── Concurrent index uploaders ──────────────────────────────────────────
+const INDEX_TASK_TIMEOUT = 600_000;
+const BATCH_SIZE = 5000;
+const CASSANDRA_PAGE_SIZE = 10000;
 
 /**
- * Upload documents to Meilisearch with concurrent batch uploads.
- * Instead of waiting for each batch to complete, fires UPLOAD_CONCURRENCY
- * batches in parallel. Meilisearch queues them internally.
+ * Enqueue all document chunks to Meilisearch rapidly without waiting between batches.
+ * Meilisearch processes tasks sequentially internally, so we just fire them all
+ * and then wait for the final task to complete — this is much faster than
+ * waiting for each batch individually.
  */
-async function uploadDocumentsConcurrently<T extends Record<string, unknown>>(
+async function enqueueDocuments<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
-  mode: "replace" | "sync",
-  batchSize = BATCH_SIZE
+  uploadFn: typeof replaceDocuments | typeof updateDocuments
 ) {
-  const chunks = chunkArray(documents, batchSize);
-  console.log(`[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches (concurrency: ${UPLOAD_CONCURRENCY})...`);
+  const chunks = chunkArray(documents, BATCH_SIZE);
+  console.log(`[indexer] enqueuing ${documents.length} docs to "${indexName}" in ${chunks.length} batches...`);
 
-  let completed = 0;
-  const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
-
-  await runWithConcurrency(chunks, UPLOAD_CONCURRENCY, async (chunk, idx) => {
+  let lastTaskUid: number | null = null;
+  for (const chunk of chunks) {
     const task = await uploadFn(indexName, chunk);
-    await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
-    completed += chunk.length;
-    // Log every ~20k docs or on the last batch
-    if (completed % 20000 < batchSize || idx === chunks.length - 1) {
-      console.log(`[indexer] "${indexName}": ${completed}/${documents.length} docs uploaded`);
-    }
-  });
+    lastTaskUid = task.taskUid;
+  }
+
+  // Only wait for the last task — Meilisearch processes them in order
+  if (lastTaskUid !== null) {
+    await waitForTask(lastTaskUid, INDEX_TASK_TIMEOUT);
+  }
+
+  console.log(`[indexer] "${indexName}": ${documents.length} documents enqueued and processed`);
 }
 
-/**
- * Replace all documents in an index (clear + concurrent upload).
- */
 async function replaceIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
-  console.log(`[indexer] clearing "${indexName}" index...`);
+  console.log(`[indexer] replacing ${documents.length} documents in "${indexName}"...`);
   const deleteTask = await deleteAllDocuments(indexName);
   await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
-  await uploadDocumentsConcurrently(indexName, documents, "replace");
+  await enqueueDocuments(indexName, documents, replaceDocuments);
 }
 
-/**
- * Sync (upsert) documents into an index concurrently.
- */
 async function syncIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[]) {
-  await uploadDocumentsConcurrently(indexName, documents, "sync");
+  console.log(`[indexer] syncing ${documents.length} documents into "${indexName}"...`);
+  await enqueueDocuments(indexName, documents, updateDocuments);
 }
 
-/**
- * Stream messages from Cassandra and index them with concurrent Meilisearch uploads.
- * - Reads Cassandra pages sequentially (driver limitation)
- * - Accumulates a buffer of pages, then fires concurrent uploads for the buffer
- * - This pipelines Cassandra I/O with Meilisearch I/O
- */
 async function streamIndexMessages(
   userMap: Map<string, UserRecord>,
   chatMap: Map<string, ChatRecord>,
   mode: "replace" | "sync"
 ) {
   if (mode === "replace") {
-    console.log(`[indexer] clearing messages index...`);
+    console.log(`[indexer] clearing messages index before streaming...`);
     const deleteTask = await deleteAllDocuments(SEARCH_INDEXES.messages);
     await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
   }
 
   let totalIndexed = 0;
   let pendingDocs: MessageDocument[] = [];
-
-  // Flush threshold: accumulate docs then fire concurrent uploads
-  const FLUSH_THRESHOLD = BATCH_SIZE * UPLOAD_CONCURRENCY; // e.g. 5000 * 8 = 40000 docs
-
+  const usersArray = Array.from(userMap.values());
+  const chatsArray = Array.from(chatMap.values());
   const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
+
+  // Buffer multiple Cassandra pages, then flush as one big concurrent enqueue
+  const FLUSH_THRESHOLD = BATCH_SIZE * 8; // ~40k docs
 
   async function flush() {
     if (pendingDocs.length === 0) return;
-
     const toUpload = pendingDocs;
     pendingDocs = [];
 
     const chunks = chunkArray(toUpload, BATCH_SIZE);
-    await runWithConcurrency(chunks, UPLOAD_CONCURRENCY, async (chunk) => {
+    let lastTaskUid: number | null = null;
+
+    // Fire all chunks rapidly
+    for (const chunk of chunks) {
       const task = await uploadFn(SEARCH_INDEXES.messages, chunk);
-      await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
-    });
+      lastTaskUid = task.taskUid;
+    }
+
+    // Wait only for the last task
+    if (lastTaskUid !== null) {
+      await waitForTask(lastTaskUid, INDEX_TASK_TIMEOUT);
+    }
 
     totalIndexed += toUpload.length;
-    console.log(`[indexer] messages: ${totalIndexed} docs indexed...`);
+    console.log(`[indexer] messages: ${totalIndexed} documents indexed so far...`);
   }
 
   for await (const messagePage of streamAllMessages(CASSANDRA_PAGE_SIZE)) {
     if (messagePage.length === 0) continue;
-
-    const documents = buildMessageDocumentsFromMaps(messagePage, userMap, chatMap);
+    const documents = buildMessageDocuments(messagePage, usersArray, chatsArray);
     pendingDocs.push(...documents);
 
-    // Flush when buffer is full
     if (pendingDocs.length >= FLUSH_THRESHOLD) {
       await flush();
     }
@@ -340,11 +278,9 @@ async function streamIndexMessages(
   // Flush remaining
   await flush();
 
-  console.log(`[indexer] messages: completed — ${totalIndexed} total documents`);
+  console.log(`[indexer] messages: completed — ${totalIndexed} total documents indexed`);
   return totalIndexed;
 }
-
-// ── Public API ──────────────────────────────────────────────────────────
 
 export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | "messages"> = ["profiles", "chats", "messages"]) {
   const needsProfiles = scopes.includes("profiles");
@@ -353,17 +289,18 @@ export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | 
 
   console.log(`[indexer] loading source data for scopes: ${scopes.join(", ")}...`);
 
-  const [users, chats] = await Promise.all([
+  const [users, chats, messages] = await Promise.all([
     needsProfiles || needsMessages ? listAllUsers() : Promise.resolve([] as UserRecord[]),
     needsChats || needsMessages ? listAllChats() : Promise.resolve([] as ChatRecord[]),
+    needsMessages ? listAllMessages() : Promise.resolve([] as MessageRecord[]),
   ]);
 
-  console.log(`[indexer] loaded: ${users.length} users, ${chats.length} chats`);
+  console.log(`[indexer] loaded: ${users.length} users, ${chats.length} chats, ${messages.length} messages`);
 
   const userIds = needsProfiles ? users.map(u => u.user_id) : [];
   const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
 
-  return { users, chats, historyMap };
+  return { users, chats, messages, historyMap };
 }
 
 export async function reindexSearchDocuments() {
@@ -372,56 +309,33 @@ export async function reindexSearchDocuments() {
 
   await configureSearchIndices();
 
-  // ── Phase 1: Load reference data from Cassandra (parallel reads) ──
-  console.log("[indexer] Phase 1: Loading users and chats from Cassandra (parallel)...");
-  const loadStart = Date.now();
+  // Load all reference data from Cassandra in parallel
+  console.log("[indexer] loading users and chats from Cassandra (parallel)...");
   const [users, chats] = await Promise.all([listAllUsers(), listAllChats()]);
-  console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats in ${((Date.now() - loadStart) / 1000).toFixed(1)}s`);
+  console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats`);
 
-  // Build lookup maps (used by both profile indexing and message enrichment)
-  const userMap = new Map(users.map(u => [u.user_id, u]));
-  const chatMap = new Map(chats.map(c => [c.chat_id, c]));
-
-  // ── Phase 2: Build profile history ──
-  console.log("[indexer] Phase 2: Loading user history...");
   const userIds = users.map(u => u.user_id);
   const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
   console.log(`[indexer] loaded history for ${historyMap.size} users`);
 
-  // ── Phase 3: Index all three types in parallel ──
-  // Profiles and chats are fully loaded, so we can index them concurrently with streaming messages
-  console.log("[indexer] Phase 3: Indexing profiles, chats, and messages (parallel)...");
-  const indexStart = Date.now();
+  const userMap = new Map(users.map(u => [u.user_id, u]));
+  const chatMap = new Map(chats.map(c => [c.chat_id, c]));
 
-  const [profileResult, chatResult, messageCount] = await Promise.all([
-    // Profiles: clear + concurrent upload
-    (async () => {
-      const docs = buildProfileDocuments(users, historyMap);
-      await replaceIndexDocuments(SEARCH_INDEXES.profiles, docs);
-      return docs.length;
-    })(),
-
-    // Chats: clear + concurrent upload
-    (async () => {
-      const docs = buildChatDocuments(chats);
-      await replaceIndexDocuments(SEARCH_INDEXES.chats, docs);
-      return docs.length;
-    })(),
-
-    // Messages: stream from Cassandra + concurrent upload
+  // Index all three types in parallel — each one clears its own index independently
+  console.log("[indexer] indexing profiles, chats, and messages in parallel...");
+  const [,, messageCount] = await Promise.all([
+    replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap)),
+    replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats)),
     streamIndexMessages(userMap, chatMap, "replace"),
   ]);
 
-  const indexElapsed = ((Date.now() - indexStart) / 1000).toFixed(1);
-  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  console.log(`[indexer] indexing phase took ${indexElapsed}s`);
-  console.log(`[indexer] === FULL REINDEX COMPLETE in ${totalElapsed}s ===`);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[indexer] === FULL REINDEX COMPLETE in ${elapsed}s ===`);
 
   return {
-    profiles: profileResult,
-    chats: chatResult,
-    messages: messageCount,
+    profiles: users.length,
+    chats: chats.length,
+    messages: messageCount as number,
   };
 }
 
@@ -443,39 +357,25 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
     needsChats ? listAllChats() : Promise.resolve([] as ChatRecord[]),
   ]);
 
-  const syncTasks: Promise<void>[] = [];
   let profileCount = 0;
   let chatCount = 0;
   let messageCount = 0;
 
-  // Fire all sync operations in parallel
   if (normalizedScopes.includes("profiles")) {
-    syncTasks.push((async () => {
-      const userIds = users.map(u => u.user_id);
-      const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
-      const docs = buildProfileDocuments(users, historyMap);
-      await syncIndexDocuments(SEARCH_INDEXES.profiles, docs);
-      profileCount = docs.length;
-    })());
+    const userIds = users.map(u => u.user_id);
+    const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
+    await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));
+    profileCount = users.length;
   }
-
   if (normalizedScopes.includes("chats")) {
-    syncTasks.push((async () => {
-      const docs = buildChatDocuments(chats);
-      await syncIndexDocuments(SEARCH_INDEXES.chats, docs);
-      chatCount = docs.length;
-    })());
+    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
+    chatCount = chats.length;
   }
-
   if (normalizedScopes.includes("messages")) {
-    syncTasks.push((async () => {
-      const userMap = new Map(users.map(u => [u.user_id, u]));
-      const chatMap = new Map(chats.map(c => [c.chat_id, c]));
-      messageCount = await streamIndexMessages(userMap, chatMap, "sync");
-    })());
+    const userMap = new Map(users.map(u => [u.user_id, u]));
+    const chatMap = new Map(chats.map(c => [c.chat_id, c]));
+    messageCount = await streamIndexMessages(userMap, chatMap, "sync");
   }
-
-  await Promise.all(syncTasks);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[indexer] === SYNC COMPLETE in ${elapsed}s ===`);
