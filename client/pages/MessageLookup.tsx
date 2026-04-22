@@ -1,4 +1,4 @@
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import type { LookupMessage } from "@shared/api";
 import { ArrowLeft } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -23,10 +23,13 @@ function HighlightedMarkup({ html }: { html: string }) {
 export default function MessageLookup() {
   const { chatId, messageId } = useParams<{ chatId: string; messageId: string }>();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const prefetchedMessage = (location.state as { prefetchedMessage?: LookupMessage } | null)?.prefetchedMessage ?? null;
+  const bucket = searchParams.get("bucket") ?? undefined;
+  const timestamp = searchParams.get("timestamp") ?? undefined;
 
   const { data, isLoading, error } = trpc.lookup.getMessage.useQuery(
-    { chatId: chatId!, messageId: messageId! },
+    { chatId: chatId!, messageId: messageId!, bucket, timestamp },
     { enabled: !!chatId && !!messageId }
   );
 

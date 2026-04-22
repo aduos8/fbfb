@@ -269,7 +269,12 @@ export const lookupRouter = router({
       const page = rows.slice(offset, offset + input.limit + 1);
 
       const items = (await Promise.all(
-        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx))
+        page.slice(0, input.limit).map((message) =>
+          getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx, {
+            bucket: message.bucket ?? null,
+            timestamp: message.timestamp ? new Date(message.timestamp).toISOString() : null,
+          })
+        )
       )).filter(Boolean) as z.infer<typeof LookupMessageSchema>[];
 
       return {
@@ -309,7 +314,12 @@ export const lookupRouter = router({
       const page = rows.slice(offset, offset + input.limit + 1);
 
       const items = (await Promise.all(
-        page.slice(0, input.limit).map((message) => getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx))
+        page.slice(0, input.limit).map((message) =>
+          getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx, {
+            bucket: message.bucket ?? null,
+            timestamp: message.timestamp ? new Date(message.timestamp).toISOString() : null,
+          })
+        )
       )).filter(Boolean) as z.infer<typeof LookupMessageSchema>[];
 
       return {
@@ -320,7 +330,12 @@ export const lookupRouter = router({
 
   getMessage: searchModeProcedure
     .meta({ openapi: { method: "GET", path: "/lookup/getMessage", protect: true } })
-    .input(z.object({ chatId: z.string(), messageId: z.string() }))
+    .input(z.object({
+      chatId: z.string(),
+      messageId: z.string(),
+      bucket: z.string().optional(),
+      timestamp: z.string().optional(),
+    }))
     .output(LookupMessageSchema.nullable())
     .query(async ({ ctx, input }) => {
       const searchCtx = await buildViewer(ctx);
@@ -328,7 +343,10 @@ export const lookupRouter = router({
       if (!canAccessMessages) {
         return null;
       }
-      return getLookupMessage(input.chatId, input.messageId, searchCtx);
+      return getLookupMessage(input.chatId, input.messageId, searchCtx, {
+        bucket: input.bucket ?? null,
+        timestamp: input.timestamp ?? null,
+      });
     }),
 
   getUserHistory: searchModeProcedure

@@ -80,6 +80,24 @@ export type MessageRecord = {
   bucket?: string;
 };
 
+function parseMessageDate(value: Date | string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function formatMessageBucket(value: Date | string | null | undefined) {
+  const parsed = parseMessageDate(value);
+  if (!parsed) {
+    return null;
+  }
+
+  return `${parsed.getUTCFullYear()}${String(parsed.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 export type ParticipationMetaRecord = {
   user_id: string;
   chat_id: string;
@@ -314,6 +332,26 @@ export async function getMessageById(chatId: number | string, messageId: number 
   return (result.rows[0] as unknown as MessageRecord) ?? null;
 }
 
+export async function getMessageByChatBucketTimestamp(
+  chatId: number | string,
+  bucket: string,
+  timestamp: Date | string,
+  messageId: number | string
+): Promise<MessageRecord | null> {
+  const client = getClient();
+  const parsedTimestamp = parseMessageDate(timestamp);
+  if (!parsedTimestamp) {
+    return null;
+  }
+
+  const result = await client.execute(
+    "SELECT * FROM messages_by_chat WHERE chat_id = ? AND bucket = ? AND timestamp = ? AND message_id = ? LIMIT 1",
+    [String(chatId), bucket, parsedTimestamp, String(messageId)],
+    { prepare: true }
+  );
+  return (result.rows[0] as unknown as MessageRecord) ?? null;
+}
+
 export async function listMessagesByChatBucket(chatId: number | string, bucket: string, limit = 100): Promise<MessageRecord[]> {
   const client = getClient();
   const result = await client.execute(
@@ -388,10 +426,62 @@ export async function* streamAllMessages(fetchSize = 5000): AsyncGenerator<Messa
   } while (pageState);
 }
 
+async function* streamWholeMessageTable(
+  label: string,
+  query: string,
+  fetchSize = 5000
+): AsyncGenerator<MessageRecord[]> {
+  const client = getClient();
+  let pageState: Buffer | null = null;
+  let pageCount = 0;
+  let rowCount = 0;
+
+  do {
+    const result = await client.execute(query, [], {
+      prepare: true,
+      fetchSize,
+      pageState: pageState as any,
+    });
+
+    const rows = result.rows as unknown as MessageRecord[];
+    if (rows.length > 0) {
+      rowCount += rows.length;
+      yield rows;
+    }
+
+    pageCount += 1;
+    if (pageCount % 10 === 0) {
+      console.log(`[${label}] fetched ${rowCount} rows across ${pageCount} pages...`);
+    }
+
+    pageState = (result as any).pageState ?? null;
+  } while (pageState);
+
+  console.log(`[${label}] done: ${rowCount} total rows`);
+}
+
+export async function* streamAllMessagesFromChatTable(fetchSize = 5000): AsyncGenerator<MessageRecord[]> {
+  yield* streamWholeMessageTable(
+    "streamAllMessagesFromChatTable",
+    "SELECT bucket, chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat",
+    fetchSize
+  );
+}
+
+export async function* streamAllMessagesFromUserTable(fetchSize = 5000): AsyncGenerator<MessageRecord[]> {
+  yield* streamWholeMessageTable(
+    "streamAllMessagesFromUserTable",
+    "SELECT bucket, chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_user",
+    fetchSize
+  );
+}
+
 type PartitionStreamOptions = {
   fetchSize?: number;
   concurrency?: number;
   maxBufferedPages?: number;
+  bucketStartYear?: number;
+  bucketStartMonth?: number;
 };
 
 type QueueWaiter<T> = {
@@ -405,17 +495,23 @@ function normalizePartitionStreamOptions(fetchSizeOrOptions: number | PartitionS
       fetchSize: fetchSizeOrOptions,
       concurrency: 1,
       maxBufferedPages: 8,
+      bucketStartYear: 2013,
+      bucketStartMonth: 1,
     };
   }
 
   const fetchSize = fetchSizeOrOptions?.fetchSize ?? 5000;
   const concurrency = Math.max(1, fetchSizeOrOptions?.concurrency ?? 1);
   const maxBufferedPages = Math.max(1, fetchSizeOrOptions?.maxBufferedPages ?? concurrency * 4);
+  const bucketStartYear = Math.max(2013, fetchSizeOrOptions?.bucketStartYear ?? 2013);
+  const bucketStartMonth = Math.min(12, Math.max(1, fetchSizeOrOptions?.bucketStartMonth ?? 1));
 
   return {
     fetchSize,
     concurrency,
     maxBufferedPages,
+    bucketStartYear,
+    bucketStartMonth,
   };
 }
 
@@ -496,7 +592,7 @@ function createAsyncQueue<T>(maxBufferedItems: number) {
  * Generate all monthly bucket keys from a start date to now.
  * Bucket format: YYYYMM (e.g. "202401")
  */
-function generateBuckets(startYear = 2020, startMonth = 1): string[] {
+function generateBuckets(startYear = 2013, startMonth = 1): string[] {
   const buckets: string[] = [];
   const now = new Date();
   const endYear = now.getUTCFullYear();
@@ -525,8 +621,8 @@ async function* streamPartitionedMessages(
   }
 ): AsyncGenerator<MessageRecord[]> {
   const client = getClient();
-  const buckets = generateBuckets();
   const options = normalizePartitionStreamOptions(fetchSizeOrOptions);
+  const buckets = generateBuckets(options.bucketStartYear, options.bucketStartMonth);
   const queue = createAsyncQueue<MessageRecord[]>(options.maxBufferedPages);
   const workerCount = Math.min(options.concurrency, Math.max(1, entityIds.length));
   let nextEntityIndex = 0;
@@ -615,7 +711,7 @@ export async function* streamAllMessagesFromChats(
     label: "streamAllMessagesFromChats",
     entityLabel: "chats",
     progressEvery: 100,
-    query: "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat WHERE chat_id = ? AND bucket = ?",
+    query: "SELECT bucket, chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat WHERE chat_id = ? AND bucket = ?",
     buildParams: (chatId, bucket) => [chatId, bucket],
   });
 }
@@ -632,7 +728,7 @@ export async function* streamAllMessagesFromUsers(
     label: "streamAllMessagesFromUsers",
     entityLabel: "users",
     progressEvery: 500,
-    query: "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_user WHERE user_id = ? AND bucket = ?",
+    query: "SELECT bucket, chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_user WHERE user_id = ? AND bucket = ?",
     buildParams: (userId, bucket) => [userId, bucket],
   });
 }

@@ -180,7 +180,7 @@ export async function configureSearchIndices() {
     filterableAttributes: ["chatId", "senderId", "senderUsername", "hasMedia", "containsLinks", "contentLength", "timestampMs"],
     sortableAttributes: ["timestampMs"],
     typoTolerance: { enabled: true },
-    pagination: { maxTotalHits: 1000000 },
+    pagination: { maxTotalHits: 5000000 },
   });
   await waitForTask(messageSettingsTask.taskUid);
 }

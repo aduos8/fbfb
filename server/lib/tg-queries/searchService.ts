@@ -10,11 +10,13 @@ import type {
 import { toApiServedAssetUrl } from "./storageAssets";
 import {
   getChatById,
+  getMessageByChatBucketTimestamp,
   getMessageById,
   getUserById,
   getUserByUsername,
   getUserHistoryForBatch,
   listChatsByIds,
+  formatMessageBucket,
 } from "./queries";
 import { hashPhoneNumber } from "./phone";
 import {
@@ -95,6 +97,7 @@ type MessageDocument = {
   hasMedia: boolean | null;
   containsLinks: boolean | null;
   contentLength: number;
+  bucket: string | null;
   timestamp: string | null;
   timestampMs: number | null;
 };
@@ -132,6 +135,35 @@ function numericDate(value: string | undefined) {
   }
 
   return parsed.getTime();
+}
+
+function parseLookupTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function buildMessageContextLink(
+  chatId: string,
+  messageId: string,
+  bucket?: string | null,
+  timestamp?: string | null
+) {
+  const params = new URLSearchParams();
+  if (bucket) {
+    params.set("bucket", bucket);
+  }
+  if (timestamp) {
+    params.set("timestamp", timestamp);
+  }
+
+  const query = params.toString();
+  return query
+    ? `/lookup/message/${chatId}/${messageId}?${query}`
+    : `/lookup/message/${chatId}/${messageId}`;
 }
 
 function addReason(reasons: string[], reason: string) {
@@ -662,7 +694,12 @@ async function buildMessageResults(
       },
       hasMedia: document.hasMedia ?? null,
       containsLinks: document.containsLinks ?? containsLink(document.content),
-      contextLink: `/lookup/message/${document.chatId}/${document.messageId}`,
+      contextLink: buildMessageContextLink(
+        document.chatId,
+        document.messageId,
+        document.bucket,
+        serializeDate(document.timestamp)
+      ),
       relevance: createRelevance(document._rankingScore, reasons),
       redaction: buildRedactionMetadata(mergedRedaction),
     };
@@ -875,8 +912,20 @@ export async function runMessageSearch(input: MessageSearchInput, context: Searc
   return { results, total: indexed.total };
 }
 
-export async function getLookupMessage(chatId: string, messageId: string, context: SearchContext) {
-  const message = await getMessageById(chatId, messageId);
+export async function getLookupMessage(
+  chatId: string,
+  messageId: string,
+  context: SearchContext,
+  lookupHints?: { bucket?: string | null; timestamp?: string | null }
+) {
+  let message = await getMessageById(chatId, messageId);
+  const hintTimestamp = parseLookupTimestamp(lookupHints?.timestamp);
+  const hintBucket = lookupHints?.bucket ?? formatMessageBucket(hintTimestamp);
+
+  if (!message && hintBucket && hintTimestamp) {
+    message = await getMessageByChatBucketTimestamp(chatId, hintBucket, hintTimestamp, messageId);
+  }
+
   if (!message) {
     return null;
   }
@@ -895,10 +944,12 @@ export async function getLookupMessage(chatId: string, messageId: string, contex
   }
 
   const content = String(message.content ?? "");
+  const messageTimestamp = serializeDate(message.timestamp ?? message.created_at);
+  const messageBucket = message.bucket ?? hintBucket ?? formatMessageBucket(message.timestamp ?? message.created_at);
   return {
     messageId: String(message.message_id),
     chatId: String(message.chat_id),
-    timestamp: serializeDate(message.timestamp ?? message.created_at),
+    timestamp: messageTimestamp,
     content: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("messages")
       ? "[redacted]"
       : content,
@@ -926,7 +977,7 @@ export async function getLookupMessage(chatId: string, messageId: string, contex
         ? "[redacted]"
         : chat?.username ?? null,
     },
-    contextLink: `/lookup/message/${message.chat_id}/${message.message_id}`,
+    contextLink: buildMessageContextLink(String(message.chat_id), String(message.message_id), messageBucket, messageTimestamp),
     redaction: buildRedactionMetadata(mergedRedaction),
   };
 }

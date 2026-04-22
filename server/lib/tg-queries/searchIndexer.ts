@@ -12,8 +12,11 @@ import {
   listAllMessages,
   listAllUsers,
   streamAllMessages,
+  streamAllMessagesFromChatTable,
   streamAllMessagesFromChats,
+  streamAllMessagesFromUserTable,
   streamAllMessagesFromUsers,
+  formatMessageBucket,
   getUserHistoryForBatch,
   type ChatRecord,
   type MessageRecord,
@@ -28,9 +31,14 @@ const DEFAULT_CASSANDRA_PAGE_SIZE = 10000;
 const DEFAULT_FLUSH_MULTIPLIER = 4;
 const DEFAULT_CHAT_SCAN_CONCURRENCY = 4;
 const DEFAULT_USER_SCAN_CONCURRENCY = 4;
+const DEFAULT_BUCKET_START_YEAR = 2013;
+const DEFAULT_BUCKET_START_MONTH = 1;
+const DEFAULT_MESSAGE_SCAN_MODE = "table_scan";
 const VALID_MESSAGE_PHASES = ["messages_by_chat", "messages_by_user", "messages_by_id"] as const;
+const VALID_MESSAGE_SCAN_MODES = ["table_scan", "partition_scan"] as const;
 
 type MessagePhase = typeof VALID_MESSAGE_PHASES[number];
+type MessageScanMode = typeof VALID_MESSAGE_SCAN_MODES[number];
 
 type IndexerConfig = {
   batchSize: number;
@@ -39,6 +47,9 @@ type IndexerConfig = {
   flushMultiplier: number;
   chatScanConcurrency: number;
   userScanConcurrency: number;
+  bucketStartYear: number;
+  bucketStartMonth: number;
+  messageScanMode: MessageScanMode;
   reindexPhases: MessagePhase[];
   syncPhases: MessagePhase[];
 };
@@ -83,6 +94,7 @@ type MessageDocument = {
   hasMedia: boolean | null;
   containsLinks: boolean | null;
   contentLength: number;
+  bucket: string | null;
   timestamp: string | null;
   timestampMs: number | null;
 };
@@ -142,10 +154,24 @@ function readPositiveIntEnv(name: string, fallback: number) {
   return parsed;
 }
 
+function parseMessageScanMode(name: string, fallback: MessageScanMode): MessageScanMode {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  if ((VALID_MESSAGE_SCAN_MODES as readonly string[]).includes(raw)) {
+    return raw as MessageScanMode;
+  }
+
+  console.warn(`[indexer] ignoring invalid ${name}="${raw}"`);
+  return fallback;
+}
+
 function parseMessagePhases(name: string, fallback: MessagePhase[]) {
   const raw = process.env[name];
   if (!raw) {
-    return fallback;
+    return Array.from(new Set(fallback));
   }
 
   const phases = raw
@@ -163,6 +189,26 @@ function parseMessagePhases(name: string, fallback: MessagePhase[]) {
   return Array.from(new Set(phases));
 }
 
+function ensureRequiredMessagePhases(phases: MessagePhase[], requiredPhases: MessagePhase[]) {
+  const normalized = Array.from(new Set(phases));
+  let added = false;
+
+  for (const phase of requiredPhases) {
+    if (!normalized.includes(phase)) {
+      normalized.push(phase);
+      added = true;
+    }
+  }
+
+  if (added) {
+    console.warn(
+      `[indexer] required message phases restored automatically: ${requiredPhases.join(", ")}`
+    );
+  }
+
+  return normalized;
+}
+
 function getIndexerConfig(): IndexerConfig {
   return {
     batchSize: readPositiveIntEnv("SEARCH_INDEX_BATCH_SIZE", DEFAULT_BATCH_SIZE),
@@ -171,12 +217,24 @@ function getIndexerConfig(): IndexerConfig {
     flushMultiplier: readPositiveIntEnv("SEARCH_INDEX_FLUSH_MULTIPLIER", DEFAULT_FLUSH_MULTIPLIER),
     chatScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_CHAT_SCAN_CONCURRENCY", DEFAULT_CHAT_SCAN_CONCURRENCY),
     userScanConcurrency: readPositiveIntEnv("SEARCH_INDEX_USER_SCAN_CONCURRENCY", DEFAULT_USER_SCAN_CONCURRENCY),
-    reindexPhases: parseMessagePhases(
-      "SEARCH_INDEX_REINDEX_PHASES",
+    bucketStartYear: readPositiveIntEnv("SEARCH_INDEX_BUCKET_START_YEAR", DEFAULT_BUCKET_START_YEAR),
+    bucketStartMonth: Math.min(
+      12,
+      Math.max(1, readPositiveIntEnv("SEARCH_INDEX_BUCKET_START_MONTH", DEFAULT_BUCKET_START_MONTH))
+    ),
+    messageScanMode: parseMessageScanMode("SEARCH_INDEX_MESSAGE_SCAN_MODE", DEFAULT_MESSAGE_SCAN_MODE),
+    reindexPhases: ensureRequiredMessagePhases(
+      parseMessagePhases(
+        "SEARCH_INDEX_REINDEX_PHASES",
+        ["messages_by_chat", "messages_by_user", "messages_by_id"]
+      ),
       ["messages_by_chat", "messages_by_user", "messages_by_id"]
     ),
-    syncPhases: parseMessagePhases(
-      "SEARCH_INDEX_SYNC_PHASES",
+    syncPhases: ensureRequiredMessagePhases(
+      parseMessagePhases(
+        "SEARCH_INDEX_SYNC_PHASES",
+        ["messages_by_chat", "messages_by_user", "messages_by_id"]
+      ),
       ["messages_by_chat", "messages_by_user", "messages_by_id"]
     ),
   };
@@ -286,6 +344,7 @@ export function buildMessageDocumentsFromMaps(
       hasMedia: message.has_media ?? Boolean(message.media_type || message.media_url),
       containsLinks: containsLink(content),
       contentLength: content.length,
+      bucket: message.bucket ?? formatMessageBucket(message.timestamp ?? message.created_at),
       timestamp: toIsoString(message.timestamp ?? message.created_at),
       timestampMs: toTimestampMs(message.timestamp ?? message.created_at),
     };
@@ -404,28 +463,52 @@ async function streamIndexMessages(
     const phaseStartCount = totalIndexed;
 
     if (phase === "messages_by_chat") {
-      const chatIds = Array.from(chatMap.keys());
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (${chatIds.length} chats)...`);
-      for await (const messagePage of streamAllMessagesFromChats(chatIds, {
-        fetchSize: config.cassandraPageSize,
-        concurrency: config.chatScanConcurrency,
-      })) {
-        if (messagePage.length === 0) continue;
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) pendingDocs.push(...documents);
-        if (pendingDocs.length >= flushThreshold) await flush();
+      if (config.messageScanMode === "table_scan") {
+        console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (full table scan)...`);
+        for await (const messagePage of streamAllMessagesFromChatTable(config.cassandraPageSize)) {
+          if (messagePage.length === 0) continue;
+          const documents = deduplicateAndBuild(messagePage);
+          if (documents.length > 0) pendingDocs.push(...documents);
+          if (pendingDocs.length >= flushThreshold) await flush();
+        }
+      } else {
+        const chatIds = Array.from(chatMap.keys());
+        console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (${chatIds.length} chats)...`);
+        for await (const messagePage of streamAllMessagesFromChats(chatIds, {
+          fetchSize: config.cassandraPageSize,
+          concurrency: config.chatScanConcurrency,
+          bucketStartYear: config.bucketStartYear,
+          bucketStartMonth: config.bucketStartMonth,
+        })) {
+          if (messagePage.length === 0) continue;
+          const documents = deduplicateAndBuild(messagePage);
+          if (documents.length > 0) pendingDocs.push(...documents);
+          if (pendingDocs.length >= flushThreshold) await flush();
+        }
       }
     } else if (phase === "messages_by_user") {
-      const userIds = Array.from(userMap.keys());
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (${userIds.length} users)...`);
-      for await (const messagePage of streamAllMessagesFromUsers(userIds, {
-        fetchSize: config.cassandraPageSize,
-        concurrency: config.userScanConcurrency,
-      })) {
-        if (messagePage.length === 0) continue;
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) pendingDocs.push(...documents);
-        if (pendingDocs.length >= flushThreshold) await flush();
+      if (config.messageScanMode === "table_scan") {
+        console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (full table scan)...`);
+        for await (const messagePage of streamAllMessagesFromUserTable(config.cassandraPageSize)) {
+          if (messagePage.length === 0) continue;
+          const documents = deduplicateAndBuild(messagePage);
+          if (documents.length > 0) pendingDocs.push(...documents);
+          if (pendingDocs.length >= flushThreshold) await flush();
+        }
+      } else {
+        const userIds = Array.from(userMap.keys());
+        console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (${userIds.length} users)...`);
+        for await (const messagePage of streamAllMessagesFromUsers(userIds, {
+          fetchSize: config.cassandraPageSize,
+          concurrency: config.userScanConcurrency,
+          bucketStartYear: config.bucketStartYear,
+          bucketStartMonth: config.bucketStartMonth,
+        })) {
+          if (messagePage.length === 0) continue;
+          const documents = deduplicateAndBuild(messagePage);
+          if (documents.length > 0) pendingDocs.push(...documents);
+          if (pendingDocs.length >= flushThreshold) await flush();
+        }
       }
     } else {
       console.log(`[indexer] ${phaseLabel}: streaming messages_by_id...`);
@@ -438,6 +521,14 @@ async function streamIndexMessages(
     }
 
     await flush();
+    if ((phase === "messages_by_chat" || phase === "messages_by_user") && totalIndexed === phaseStartCount) {
+      const scanHint = config.messageScanMode === "partition_scan"
+        ? `This usually means the configured bucket scan range does not match the Cassandra data. Current bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}.`
+        : "This usually means the source table is empty or Cassandra returned no rows for the full table scan.";
+      console.warn(
+        `[indexer] ${phase} returned 0 messages. ${scanHint}`
+      );
+    }
     console.log(`[indexer] ${phaseLabel} complete: +${totalIndexed - phaseStartCount} new from ${phase}`);
   }
 
@@ -474,6 +565,8 @@ export async function reindexSearchDocuments() {
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
     `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
     `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
+    `scanMode=${config.messageScanMode}, ` +
+    `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
     `messagePhases=${config.reindexPhases.join(" -> ")}`
   );
 
@@ -520,6 +613,8 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
     `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
     `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
+    `scanMode=${config.messageScanMode}, ` +
+    `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
     `messagePhases=${config.syncPhases.join(" -> ")}`
   );
 
