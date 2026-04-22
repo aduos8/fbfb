@@ -80,7 +80,8 @@ vi.mock("./queries", () => ({
   streamAllMessagesFromUsers: queryMocks.streamAllMessagesFromUsers,
 }));
 
-const { buildMessageDocumentsFromMaps, legacySyncSearchDocuments, reindexSearchDocuments } = await import("./searchIndexer");
+const { buildMessageDocumentsFromMaps, legacySyncSearchDocuments, reindexSearchDocuments } =
+  await import("./searchIndexer");
 
 function pages<T>(...items: T[][]): AsyncGenerator<T[]> {
   return (async function* () {
@@ -134,7 +135,10 @@ beforeEach(() => {
   searchIndexMocks.replaceDocuments.mockResolvedValue({ taskUid: 2, batchUid: 2 });
   searchIndexMocks.swapIndexes.mockResolvedValue({ taskUid: 4, batchUid: 4 });
   searchIndexMocks.updateDocuments.mockResolvedValue({ taskUid: 3, batchUid: 3 });
-  searchIndexMocks.waitForTask.mockImplementation(async (taskUid: number) => ({ taskUid, batchUid: taskUid }));
+  searchIndexMocks.waitForTask.mockImplementation(async (taskUid: number) => ({
+    taskUid,
+    batchUid: taskUid,
+  }));
 
   dbSearchIndexingMocks.createSearchIndexRun.mockResolvedValue({ id: "run-1234" });
   dbSearchIndexingMocks.markSearchIndexRunFailed.mockResolvedValue(undefined);
@@ -251,17 +255,27 @@ describe("searchIndexer behavior", () => {
     expect(queryMocks.streamAllMessagesFromUserTable).not.toHaveBeenCalled();
     expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledWith(
       ["c1"],
-      expect.objectContaining({ fetchSize: 10000, concurrency: 6, bucketStartYear: 2015, bucketStartMonth: 4 })
+      expect.objectContaining({
+        fetchSize: 10000,
+        concurrency: 6,
+        bucketStartYear: 2015,
+        bucketStartMonth: 4,
+      })
     );
     expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledWith(
       ["u1"],
-      expect.objectContaining({ fetchSize: 10000, concurrency: 3, bucketStartYear: 2015, bucketStartMonth: 4 })
+      expect.objectContaining({
+        fetchSize: 10000,
+        concurrency: 3,
+        bucketStartYear: 2015,
+        bucketStartMonth: 4,
+      })
     );
   });
 });
 
 describe("message document enrichment", () => {
-  it("stores per-message bucket metadata for later lookup recovery", () => {
+  it("stores per-message bucket metadata and character sets for later lookup recovery", () => {
     const documents = buildMessageDocumentsFromMaps(
       [
         {
@@ -283,6 +297,7 @@ describe("message document enrichment", () => {
       senderUsername: "alice",
       chatTitle: "General",
       content: "hello",
+      contentCharacterSet: expect.arrayContaining(["h", "e", "l", "o"]),
     });
   });
 });

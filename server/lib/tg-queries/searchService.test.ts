@@ -69,7 +69,7 @@ vi.mock("./searchIndex", () => ({
   searchIndex: searchIndexMocks.searchIndex,
 }));
 
-const { buildMessageContextLink, getLookupMessage } = await import("./searchService");
+const { buildMessageContextLink, getLookupMessage, runMessageSearch } = await import("./searchService");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -132,5 +132,58 @@ describe("getLookupMessage", () => {
     expect(result?.contextLink).toBe(
       "/lookup/message/c1/m1?bucket=202403&timestamp=2024-03-10T12%3A00%3A00.000Z"
     );
+  });
+});
+
+describe("runMessageSearch", () => {
+  it("uses exact character filters for single-character content searches", async () => {
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          documentId: "c1_m1",
+          messageId: "m1",
+          chatId: "c1",
+          senderId: "u1",
+          senderUsername: "alice",
+          senderDisplayName: "Alice",
+          chatTitle: "General",
+          chatType: "group",
+          chatUsername: "general",
+          content: "hello there",
+          contentCharacterSet: ["h", "e", "l", "o", "t", "r"],
+          hasMedia: false,
+          containsLinks: false,
+          contentLength: 11,
+          bucket: "202403",
+          timestamp: "2024-03-10T12:00:00.000Z",
+          timestampMs: 1710072000000,
+        },
+      ],
+      totalHits: 1,
+    });
+
+    const result = await runMessageSearch(
+      {
+        type: "message",
+        page: 1,
+        limit: 25,
+        query: "e",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(searchIndexMocks.searchIndex).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({
+        q: "",
+        filter: expect.arrayContaining(['contentCharacterSet = "e"']),
+        page: 1,
+        hitsPerPage: 25,
+      })
+    );
+    expect(result.total).toBe(1);
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.snippet).toContain("e");
   });
 });

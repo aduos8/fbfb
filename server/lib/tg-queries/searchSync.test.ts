@@ -25,6 +25,7 @@ const searchIndexerMocks = vi.hoisted(() => ({
       messageId: message.message_id,
       chatId: message.chat_id,
       content: message.content,
+      contentCharacterSet: Array.from(new Set(String(message.content ?? "").toLowerCase().split(""))),
       contentLength: String(message.content ?? "").length,
       containsLinks: false,
       bucket: message.bucket ?? "202403",

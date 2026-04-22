@@ -25,6 +25,8 @@ type SearchRequest = {
   filter?: string | string[];
   offset?: number;
   limit?: number;
+  page?: number;
+  hitsPerPage?: number;
   attributesToHighlight?: string[];
   attributesToCrop?: string[];
   cropLength?: number;
@@ -43,6 +45,9 @@ type SearchResponse<T> = {
   totalHits?: number;
   offset?: number;
   limit?: number;
+  page?: number;
+  hitsPerPage?: number;
+  totalPages?: number;
   processingTimeMs?: number;
   query?: string;
 };
@@ -260,10 +265,19 @@ export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_IN
 
   const messageSettingsTask = await updateIndexSettings(indexes.messages, {
     searchableAttributes: [...MESSAGE_SEARCHABLE_ATTRIBUTES],
-    filterableAttributes: ["chatId", "senderId", "senderUsername", "hasMedia", "containsLinks", "contentLength", "timestampMs"],
+    filterableAttributes: [
+      "chatId",
+      "senderId",
+      "senderUsername",
+      "hasMedia",
+      "containsLinks",
+      "contentLength",
+      "timestampMs",
+      "contentCharacterSet",
+    ],
     sortableAttributes: ["timestampMs"],
     typoTolerance: { enabled: true },
-    pagination: { maxTotalHits: 5000000 },
+    pagination: { maxTotalHits: 900000000 },
   });
   await waitForTask(messageSettingsTask.taskUid);
 }

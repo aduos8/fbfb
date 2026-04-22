@@ -607,53 +607,112 @@ function generateBuckets(startYear = 2013, startMonth = 1): string[] {
   return buckets;
 }
 
-export async function* streamAllMessagesFromChats(
-  chatIds: string[],
-  fetchSize = 5000
+type PartitionStreamDefinition = {
+  label: string;
+  entityLabel: string;
+  progressEvery: number;
+  query: string;
+  buildParams: (entityId: string, bucket: string) => unknown[];
+};
+
+async function* streamPartitionedMessages(
+  entityIds: string[],
+  fetchSizeOrOptions: number | PartitionStreamOptions,
+  definition: PartitionStreamDefinition
 ): AsyncGenerator<MessageRecord[]> {
   const client = getClient();
   const options = normalizePartitionStreamOptions(fetchSizeOrOptions);
-  const buckets = generateBuckets(options.bucketStartYear, options.bucketStartMonth);
-  const queue = createAsyncQueue<MessageRecord[]>(options.maxBufferedPages);
-  const workerCount = Math.min(options.concurrency, Math.max(1, entityIds.length));
-  let nextEntityIndex = 0;
-  let totalYielded = 0;
-
-  console.log(`[streamAllMessagesFromChats] scanning ${chatIds.length} chats × ${buckets.length} buckets...`);
-
-  for (let chatIdx = 0; chatIdx < chatIds.length; chatIdx++) {
-    const chatId = chatIds[chatIdx];
-
-    for (const bucket of buckets) {
-      let pageState: Buffer | null = null;
-
-      do {
-        const result = await client.execute(
-          "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat WHERE chat_id = ? AND bucket = ?",
-          [chatId, bucket],
-          {
-            prepare: true,
-            fetchSize,
-            pageState: pageState as any,
-          }
-        );
-
-        if (result.rows.length > 0) {
-          yield result.rows as unknown as MessageRecord[];
-          totalYielded += result.rows.length;
-        }
-
-        pageState = (result as any).pageState ?? null;
-      } while (pageState);
-    }
-
-    // Progress every 100 chats
-    if ((chatIdx + 1) % 100 === 0) {
-      console.log(`[streamAllMessagesFromChats] processed ${chatIdx + 1}/${chatIds.length} chats (${totalYielded} messages so far)...`);
-    }
+  if (entityIds.length === 0) {
+    console.log(`[${definition.label}] no ${definition.entityLabel} to scan`);
+    return;
   }
 
-  console.log(`[streamAllMessagesFromChats] done: ${totalYielded} total messages from ${chatIds.length} chats`);
+  const buckets = generateBuckets(options.bucketStartYear, options.bucketStartMonth);
+  const queue = createAsyncQueue<MessageRecord[]>(options.maxBufferedPages);
+  const workerCount = Math.min(options.concurrency, entityIds.length);
+  let nextEntityIndex = 0;
+  let processedEntities = 0;
+  let totalYielded = 0;
+  let settledWorkers = 0;
+
+  console.log(
+    `[${definition.label}] scanning ${entityIds.length} ${definition.entityLabel} × ${buckets.length} buckets ` +
+    `(concurrency=${workerCount})...`
+  );
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    try {
+      while (true) {
+        const entityIndex = nextEntityIndex++;
+        if (entityIndex >= entityIds.length) {
+          return;
+        }
+
+        const entityId = entityIds[entityIndex]!;
+        for (const bucket of buckets) {
+          let pageState: Buffer | null = null;
+
+          do {
+            const result = await client.execute(
+              definition.query,
+              definition.buildParams(entityId, bucket),
+              {
+                prepare: true,
+                fetchSize: options.fetchSize,
+                pageState: pageState as any,
+              }
+            );
+
+            const rows = result.rows as unknown as MessageRecord[];
+            if (rows.length > 0) {
+              await queue.push(rows);
+            }
+
+            pageState = (result as any).pageState ?? null;
+          } while (pageState);
+        }
+
+        processedEntities += 1;
+        if (
+          processedEntities % definition.progressEvery === 0
+          || processedEntities === entityIds.length
+        ) {
+          console.log(
+            `[${definition.label}] processed ${processedEntities}/${entityIds.length} ${definition.entityLabel} ` +
+            `(${totalYielded} messages yielded so far)...`
+          );
+        }
+      }
+    } catch (error) {
+      queue.fail(error);
+      throw error;
+    } finally {
+      settledWorkers += 1;
+      if (settledWorkers === workerCount) {
+        queue.close();
+      }
+    }
+  });
+
+  try {
+    while (true) {
+      const next = await queue.next();
+      if (next.done) {
+        break;
+      }
+
+      totalYielded += next.value.length;
+      yield next.value;
+    }
+
+    await Promise.all(workers);
+  } finally {
+    await Promise.allSettled(workers);
+  }
+
+  console.log(
+    `[${definition.label}] done: ${totalYielded} total messages from ${entityIds.length} ${definition.entityLabel}`
+  );
 }
 
 /**
@@ -680,7 +739,7 @@ export async function* streamAllMessagesFromChats(
  */
 export async function* streamAllMessagesFromUsers(
   userIds: string[],
-  fetchSize = 5000
+  fetchSizeOrOptions: number | PartitionStreamOptions = 5000
 ): AsyncGenerator<MessageRecord[]> {
   yield* streamPartitionedMessages(userIds, fetchSizeOrOptions, {
     label: "streamAllMessagesFromUsers",

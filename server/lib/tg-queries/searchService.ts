@@ -20,6 +20,7 @@ import {
 } from "./queries";
 import { hashPhoneNumber } from "./phone";
 import {
+  buildContentCharacterSet,
   classifyQuery,
   cleanSearchValue,
   confidenceFromScore,
@@ -94,6 +95,7 @@ type MessageDocument = {
   chatType: string | null;
   chatUsername: string | null;
   content: string;
+  contentCharacterSet: string[];
   hasMedia: boolean | null;
   containsLinks: boolean | null;
   contentLength: number;
@@ -364,8 +366,31 @@ function buildMessageFilter(input: MessageSearchInput) {
   return filterParts;
 }
 
+function buildMessageKeywordSearch(keyword: string | undefined) {
+  if (!keyword) {
+    return {
+      q: "",
+      extraFilters: [] as string[],
+    };
+  }
+
+  if (keyword.length === 1) {
+    const character = buildContentCharacterSet(keyword)[0];
+    return {
+      q: "",
+      extraFilters: character
+        ? [`contentCharacterSet = ${escapeFilterValue(character)}`]
+        : [],
+    };
+  }
+
+  return {
+    q: keyword,
+    extraFilters: [] as string[],
+  };
+}
+
 async function searchProfilesViaIndex(input: ProfileSearchInput) {
-  const paginationOffset = (input.page - 1) * input.limit;
   const querySource = cleanSearchValue(input.query)
     ?? cleanSearchValue(input.filters.username)
     ?? cleanSearchValue(input.filters.displayName)
@@ -375,8 +400,8 @@ async function searchProfilesViaIndex(input: ProfileSearchInput) {
   const response = await searchIndex<ProfileDocument>(SEARCH_INDEXES.profiles, {
     q: querySource,
     filter: buildProfileFilter(input),
-    offset: paginationOffset,
-    limit: input.limit,
+    page: input.page,
+    hitsPerPage: input.limit,
     showRankingScore: true,
   });
 
@@ -388,7 +413,6 @@ async function searchProfilesViaIndex(input: ProfileSearchInput) {
 }
 
 async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSearchInput | GroupSearchInput) {
-  const paginationOffset = (input.page - 1) * input.limit;
   const querySource = cleanSearchValue(input.query)
     ?? cleanSearchValue(input.filters.username)
     ?? ("title" in input.filters ? cleanSearchValue(input.filters.title) : undefined)
@@ -399,8 +423,8 @@ async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSear
   const response = await searchIndex<ChatDocument>(SEARCH_INDEXES.chats, {
     q: querySource,
     filter: buildChatFilter(kind, input),
-    offset: paginationOffset,
-    limit: input.limit,
+    page: input.page,
+    hitsPerPage: input.limit,
     showRankingScore: true,
     sort: ["memberCount:desc"],
   });
@@ -413,13 +437,13 @@ async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSear
 }
 
 async function searchMessagesViaIndex(input: MessageSearchInput) {
-  const paginationOffset = (input.page - 1) * input.limit;
   const keyword = cleanSearchValue(input.filters.keyword ?? input.query) ?? "";
+  const keywordSearch = buildMessageKeywordSearch(keyword);
   const response = await searchIndex<MessageDocument>(SEARCH_INDEXES.messages, {
-    q: keyword,
-    filter: buildMessageFilter(input),
-    offset: paginationOffset,
-    limit: input.limit,
+    q: keywordSearch.q,
+    filter: [...buildMessageFilter(input), ...keywordSearch.extraFilters],
+    page: input.page,
+    hitsPerPage: input.limit,
     attributesToHighlight: ["content"],
     attributesToCrop: ["content"],
     cropLength: 180,

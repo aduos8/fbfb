@@ -65,3 +65,11 @@ export function highlightSnippet(value: string, query: string | undefined) {
 export function containsLink(value: string | null | undefined) {
   return /https?:\/\/[^\s]+/i.test(String(value ?? ""));
 }
+
+export function buildContentCharacterSet(value: string | null | undefined) {
+  return Array.from(
+    new Set(
+      Array.from(String(value ?? "").toLowerCase()).filter((character) => character.trim().length > 0)
+    )
+  );
+}
