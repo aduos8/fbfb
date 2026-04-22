@@ -6,6 +6,20 @@ export const SEARCH_INDEXES = {
   messages: "messages",
 } as const;
 
+export const MESSAGE_SEARCHABLE_ATTRIBUTES = [
+  "content",
+  "senderUsername",
+  "senderDisplayName",
+  "chatTitle",
+  "chatUsername",
+] as const;
+
+export type SearchIndexMap = {
+  profiles: string;
+  chats: string;
+  messages: string;
+};
+
 type SearchRequest = {
   q: string;
   filter?: string | string[];
@@ -33,11 +47,40 @@ type SearchResponse<T> = {
   query?: string;
 };
 
-type MeilisearchTask = {
+export type MeilisearchTask = {
   taskUid: number;
+  batchUid?: number | null;
+  indexUid?: string | null;
   status?: string;
+  type?: string;
   error?: unknown;
+  details?: Record<string, unknown>;
+  customMetadata?: string | null;
 };
+
+export type MeilisearchBatch = {
+  uid: number;
+  progressTrace?: Record<string, string>;
+  details?: Record<string, unknown>;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  duration?: string | null;
+};
+
+type DocumentWriteOptions = {
+  customMetadata?: string;
+};
+
+function withSearchParams(path: string, params: Record<string, string | undefined>) {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (!value) continue;
+    searchParams.set(key, value);
+  }
+
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+}
 
 function getConfig() {
   const env = readEnv();
@@ -82,7 +125,7 @@ export async function waitForTask(taskUid: number, timeoutMs = 600_000) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    const task = await request<MeilisearchTask>(`/tasks/${taskUid}`);
+    const task = await getTask(taskUid);
     if (task.status === "succeeded") {
       return task;
     }
@@ -93,6 +136,14 @@ export async function waitForTask(taskUid: number, timeoutMs = 600_000) {
   }
 
   throw new Error(`Timed out waiting for Meilisearch task ${taskUid}`);
+}
+
+export async function getTask(taskUid: number) {
+  return request<MeilisearchTask>(`/tasks/${taskUid}`);
+}
+
+export async function getBatch(batchUid: number) {
+  return request<MeilisearchBatch>(`/batches/${batchUid}`);
 }
 
 export async function ensureIndex(uid: string, primaryKey?: string) {
@@ -107,6 +158,12 @@ export async function ensureIndex(uid: string, primaryKey?: string) {
   }
 }
 
+export async function deleteIndex(uid: string) {
+  return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function updateIndexSettings(uid: string, settings: Record<string, unknown>) {
   return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}/settings`, {
     method: "PATCH",
@@ -114,23 +171,49 @@ export async function updateIndexSettings(uid: string, settings: Record<string, 
   });
 }
 
-export async function replaceDocuments<T extends Record<string, unknown>>(uid: string, documents: T[]) {
-  return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}/documents`, {
+export async function replaceDocuments<T extends Record<string, unknown>>(uid: string, documents: T[], options?: DocumentWriteOptions) {
+  return request<MeilisearchTask>(withSearchParams(`/indexes/${encodeURIComponent(uid)}/documents`, {
+    customMetadata: options?.customMetadata,
+  }), {
     method: "PUT",
     body: JSON.stringify(documents),
   });
 }
 
-export async function updateDocuments<T extends Record<string, unknown>>(uid: string, documents: T[]) {
-  return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}/documents`, {
+export async function updateDocuments<T extends Record<string, unknown>>(uid: string, documents: T[], options?: DocumentWriteOptions) {
+  return request<MeilisearchTask>(withSearchParams(`/indexes/${encodeURIComponent(uid)}/documents`, {
+    customMetadata: options?.customMetadata,
+  }), {
     method: "POST",
     body: JSON.stringify(documents),
   });
 }
 
-export async function deleteAllDocuments(uid: string) {
-  return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}/documents`, {
+export async function deleteAllDocuments(uid: string, options?: DocumentWriteOptions) {
+  return request<MeilisearchTask>(withSearchParams(`/indexes/${encodeURIComponent(uid)}/documents`, {
+    customMetadata: options?.customMetadata,
+  }), {
     method: "DELETE",
+  });
+}
+
+export async function deleteDocuments(uid: string, documentIds: string[], options?: DocumentWriteOptions) {
+  return request<MeilisearchTask>(withSearchParams(`/indexes/${encodeURIComponent(uid)}/documents/delete-batch`, {
+    customMetadata: options?.customMetadata,
+  }), {
+    method: "POST",
+    body: JSON.stringify(documentIds),
+  });
+}
+
+export async function getIndexStats(uid: string) {
+  return request<{ numberOfDocuments?: number }>(`/indexes/${encodeURIComponent(uid)}/stats`);
+}
+
+export async function swapIndexes(swaps: Array<{ indexes: [string, string] }>) {
+  return request<MeilisearchTask>("/swap-indexes", {
+    method: "POST",
+    body: JSON.stringify(swaps),
   });
 }
 
@@ -141,13 +224,13 @@ export async function searchIndex<T extends Record<string, unknown>>(uid: string
   });
 }
 
-export async function configureSearchIndices() {
-  const profileIndexTask = await ensureIndex(SEARCH_INDEXES.profiles, "userId");
+export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_INDEXES) {
+  const profileIndexTask = await ensureIndex(indexes.profiles, "userId");
   if (profileIndexTask?.taskUid) {
     await waitForTask(profileIndexTask.taskUid);
   }
 
-  const profileSettingsTask = await updateIndexSettings(SEARCH_INDEXES.profiles, {
+  const profileSettingsTask = await updateIndexSettings(indexes.profiles, {
     searchableAttributes: ["username", "displayName", "bio"],
     filterableAttributes: ["userId", "phoneHash"],
     sortableAttributes: ["updatedAt", "createdAt"],
@@ -156,12 +239,12 @@ export async function configureSearchIndices() {
   });
   await waitForTask(profileSettingsTask.taskUid);
 
-  const chatIndexTask = await ensureIndex(SEARCH_INDEXES.chats, "chatId");
+  const chatIndexTask = await ensureIndex(indexes.chats, "chatId");
   if (chatIndexTask?.taskUid) {
     await waitForTask(chatIndexTask.taskUid);
   }
 
-  const chatSettingsTask = await updateIndexSettings(SEARCH_INDEXES.chats, {
+  const chatSettingsTask = await updateIndexSettings(indexes.chats, {
     searchableAttributes: ["username", "title", "description"],
     filterableAttributes: ["chatId", "chatType"],
     sortableAttributes: ["memberCount", "participantCount", "updatedAt"],
@@ -170,13 +253,13 @@ export async function configureSearchIndices() {
   });
   await waitForTask(chatSettingsTask.taskUid);
 
-  const messageIndexTask = await ensureIndex(SEARCH_INDEXES.messages, "documentId");
+  const messageIndexTask = await ensureIndex(indexes.messages, "documentId");
   if (messageIndexTask?.taskUid) {
     await waitForTask(messageIndexTask.taskUid);
   }
 
-  const messageSettingsTask = await updateIndexSettings(SEARCH_INDEXES.messages, {
-    searchableAttributes: ["content", "senderUsername", "senderDisplayName", "chatTitle", "chatUsername"],
+  const messageSettingsTask = await updateIndexSettings(indexes.messages, {
+    searchableAttributes: [...MESSAGE_SEARCHABLE_ATTRIBUTES],
     filterableAttributes: ["chatId", "senderId", "senderUsername", "hasMedia", "containsLinks", "contentLength", "timestampMs"],
     sortableAttributes: ["timestampMs"],
     typoTolerance: { enabled: true },

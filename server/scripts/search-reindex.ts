@@ -2,8 +2,8 @@ import "dotenv/config";
 import { reindexSearchDocuments } from "../lib/tg-queries/searchIndexer";
 
 async function main() {
-  console.log("[search:reindex] Starting full reindex of Cassandra → Meilisearch...");
-  console.log("[search:reindex] This will read ALL rows from every Cassandra table and push them to Meilisearch.");
+  console.log("[search:reindex] Starting shadow reindex of Cassandra → Meilisearch...");
+  console.log("[search:reindex] This will rebuild profiles/chats plus the messages_by_chat corpus into shadow indexes, validate them, then swap them live.");
   console.log("");
 
   const startTime = Date.now();

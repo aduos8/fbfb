@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { syncSearchDocuments } from "../lib/tg-queries/searchIndexer";
+import { consumeSearchIndexOutbox, isLegacySearchSyncEnabled } from "../lib/tg-queries/searchSync";
+import { legacySyncSearchDocuments } from "../lib/tg-queries/searchIndexer";
 
 function parseScopes() {
   const scopeArg = process.argv.find((arg) => arg.startsWith("--scopes="));
@@ -16,7 +17,12 @@ function parseScopes() {
 }
 
 async function main() {
-  const result = await syncSearchDocuments(parseScopes());
+  const scopes = parseScopes();
+  const shouldUseLegacyRescan = process.argv.includes("--legacy-rescan") || isLegacySearchSyncEnabled();
+  const result = shouldUseLegacyRescan
+    ? await legacySyncSearchDocuments(scopes)
+    : await consumeSearchIndexOutbox(scopes);
+
   console.log("[search:sync] Synced documents:", result);
 }
 

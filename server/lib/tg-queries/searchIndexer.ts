@@ -1,11 +1,24 @@
 import {
+  type MeilisearchBatch,
+  type MeilisearchTask,
   SEARCH_INDEXES,
+  type SearchIndexMap,
   configureSearchIndices,
   deleteAllDocuments,
+  deleteIndex,
+  getBatch,
+  getIndexStats,
   replaceDocuments,
+  swapIndexes,
   updateDocuments,
   waitForTask,
 } from "./searchIndex";
+import {
+  createSearchIndexRun,
+  markSearchIndexRunFailed,
+  markSearchIndexRunSucceeded,
+  updateSearchIndexRun,
+} from "../db/searchIndexing";
 import { containsLink } from "./searchHelpers";
 import {
   listAllChats,
@@ -34,6 +47,7 @@ const DEFAULT_USER_SCAN_CONCURRENCY = 4;
 const DEFAULT_BUCKET_START_YEAR = 2013;
 const DEFAULT_BUCKET_START_MONTH = 1;
 const DEFAULT_MESSAGE_SCAN_MODE = "table_scan";
+const DEFAULT_AUTO_PRUNE_SHADOW_INDEXES = true;
 const VALID_MESSAGE_PHASES = ["messages_by_chat", "messages_by_user", "messages_by_id"] as const;
 const VALID_MESSAGE_SCAN_MODES = ["table_scan", "partition_scan"] as const;
 
@@ -50,6 +64,7 @@ type IndexerConfig = {
   bucketStartYear: number;
   bucketStartMonth: number;
   messageScanMode: MessageScanMode;
+  autoPruneShadowIndexes: boolean;
   reindexPhases: MessagePhase[];
   syncPhases: MessagePhase[];
 };
@@ -97,6 +112,15 @@ type MessageDocument = {
   bucket: string | null;
   timestamp: string | null;
   timestampMs: number | null;
+};
+
+type UploadSummary = {
+  taskUids: number[];
+  batchUids: number[];
+};
+
+type IndexWriteSummary = UploadSummary & {
+  count: number;
 };
 
 function toIsoString(value: Date | string | null | undefined) {
@@ -152,6 +176,15 @@ function readPositiveIntEnv(name: string, fallback: number) {
   }
 
   return parsed;
+}
+
+function readBooleanEnv(name: string, fallback: boolean) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
 }
 
 function parseMessageScanMode(name: string, fallback: MessageScanMode): MessageScanMode {
@@ -223,12 +256,13 @@ function getIndexerConfig(): IndexerConfig {
       Math.max(1, readPositiveIntEnv("SEARCH_INDEX_BUCKET_START_MONTH", DEFAULT_BUCKET_START_MONTH))
     ),
     messageScanMode: parseMessageScanMode("SEARCH_INDEX_MESSAGE_SCAN_MODE", DEFAULT_MESSAGE_SCAN_MODE),
+    autoPruneShadowIndexes: readBooleanEnv("SEARCH_INDEX_AUTO_PRUNE_SHADOW_INDEXES", DEFAULT_AUTO_PRUNE_SHADOW_INDEXES),
     reindexPhases: ensureRequiredMessagePhases(
       parseMessagePhases(
         "SEARCH_INDEX_REINDEX_PHASES",
-        ["messages_by_chat", "messages_by_user", "messages_by_id"]
+        ["messages_by_chat"]
       ),
-      ["messages_by_chat", "messages_by_user", "messages_by_id"]
+      ["messages_by_chat"]
     ),
     syncPhases: ensureRequiredMessagePhases(
       parseMessagePhases(
@@ -237,6 +271,57 @@ function getIndexerConfig(): IndexerConfig {
       ),
       ["messages_by_chat", "messages_by_user", "messages_by_id"]
     ),
+  };
+}
+
+function createShadowIndexes(runId: string): SearchIndexMap {
+  const suffix = runId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 16).toLowerCase();
+  return {
+    profiles: `${SEARCH_INDEXES.profiles}__shadow_${suffix}`,
+    chats: `${SEARCH_INDEXES.chats}__shadow_${suffix}`,
+    messages: `${SEARCH_INDEXES.messages}__shadow_${suffix}`,
+  };
+}
+
+function collectTaskSummary(tasks: MeilisearchTask[]): UploadSummary {
+  return {
+    taskUids: Array.from(new Set(tasks.map((task) => task.taskUid).filter((taskUid) => Number.isFinite(taskUid)))),
+    batchUids: Array.from(new Set(
+      tasks
+        .map((task) => task.batchUid ?? null)
+        .filter((batchUid): batchUid is number => typeof batchUid === "number" && Number.isFinite(batchUid))
+    )),
+  };
+}
+
+async function buildBatchProgressSummary(batchUids: number[]) {
+  const uniqueBatchUids = Array.from(new Set(batchUids));
+  const batches: Array<MeilisearchBatch & { uid: number }> = [];
+
+  for (const batchUid of uniqueBatchUids) {
+    try {
+      const batch = await getBatch(batchUid);
+      batches.push({ uid: batchUid, ...batch });
+    } catch (error) {
+      batches.push({
+        uid: batchUid,
+        details: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  return {
+    batchCount: uniqueBatchUids.length,
+    batches: batches.map((batch) => ({
+      uid: batch.uid,
+      duration: batch.duration ?? null,
+      startedAt: batch.startedAt ?? null,
+      finishedAt: batch.finishedAt ?? null,
+      details: batch.details ?? {},
+      progressTrace: batch.progressTrace ?? {},
+    })),
   };
 }
 
@@ -365,43 +450,80 @@ async function uploadDocumentsConcurrently<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
   uploadFn: typeof replaceDocuments | typeof updateDocuments,
-  config: IndexerConfig
-) {
+  config: IndexerConfig,
+  customMetadataPrefix?: string
+): Promise<UploadSummary> {
   const chunks = chunkArray(documents, config.batchSize);
   console.log(
     `[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches ` +
     `(concurrency: ${config.uploadConcurrency})...`
   );
 
+  const submittedTasks: MeilisearchTask[] = [];
   let completed = 0;
   await runWithConcurrency(chunks, config.uploadConcurrency, async (chunk, idx) => {
-    const task = await uploadFn(indexName, chunk);
+    const task = await uploadFn(indexName, chunk, {
+      customMetadata: customMetadataPrefix ? `${customMetadataPrefix}:chunk-${idx + 1}` : undefined,
+    });
+    submittedTasks.push(task);
     await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
     completed += chunk.length;
     if (completed % 50000 < config.batchSize || idx === chunks.length - 1) {
       console.log(`[indexer] "${indexName}": ${completed}/${documents.length} docs`);
     }
   });
+
+  return collectTaskSummary(submittedTasks);
 }
 
 async function replaceIndexDocuments<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
-  config: IndexerConfig
-) {
+  config: IndexerConfig,
+  customMetadataPrefix?: string
+): Promise<IndexWriteSummary> {
   console.log(`[indexer] replacing ${documents.length} documents in "${indexName}"...`);
-  const deleteTask = await deleteAllDocuments(indexName);
+  const deleteTask = await deleteAllDocuments(indexName, {
+    customMetadata: customMetadataPrefix ? `${customMetadataPrefix}:delete-all` : undefined,
+  });
   await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
-  await uploadDocumentsConcurrently(indexName, documents, replaceDocuments, config);
+  const uploadSummary = await uploadDocumentsConcurrently(
+    indexName,
+    documents,
+    replaceDocuments,
+    config,
+    customMetadataPrefix
+  );
+
+  return {
+    count: documents.length,
+    taskUids: [deleteTask.taskUid, ...uploadSummary.taskUids],
+    batchUids: Array.from(new Set([
+      ...(typeof deleteTask.batchUid === "number" ? [deleteTask.batchUid] : []),
+      ...uploadSummary.batchUids,
+    ])),
+  };
 }
 
 async function syncIndexDocuments<T extends Record<string, unknown>>(
   indexName: string,
   documents: T[],
-  config: IndexerConfig
-) {
+  config: IndexerConfig,
+  customMetadataPrefix?: string
+): Promise<IndexWriteSummary> {
   console.log(`[indexer] syncing ${documents.length} documents into "${indexName}"...`);
-  await uploadDocumentsConcurrently(indexName, documents, updateDocuments, config);
+  const uploadSummary = await uploadDocumentsConcurrently(
+    indexName,
+    documents,
+    updateDocuments,
+    config,
+    customMetadataPrefix
+  );
+
+  return {
+    count: documents.length,
+    ...uploadSummary,
+  };
 }
 
 function getMessagePhases(mode: "replace" | "sync", config: IndexerConfig): MessagePhase[] {
@@ -412,18 +534,28 @@ async function streamIndexMessages(
   userMap: Map<string, UserRecord>,
   chatMap: Map<string, ChatRecord>,
   mode: "replace" | "sync",
-  config: IndexerConfig
-) {
-  if (mode === "replace") {
-    console.log(`[indexer] clearing messages index before streaming...`);
-    const deleteTask = await deleteAllDocuments(SEARCH_INDEXES.messages);
-    await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
+  config: IndexerConfig,
+  options?: {
+    indexName?: string;
+    phases?: MessagePhase[];
+    customMetadataPrefix?: string;
   }
-
+): Promise<IndexWriteSummary> {
+  const targetIndexName = options?.indexName ?? SEARCH_INDEXES.messages;
   let totalIndexed = 0;
   let pendingDocs: MessageDocument[] = [];
   const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
-  const phases = getMessagePhases(mode, config);
+  const phases = options?.phases ?? getMessagePhases(mode, config);
+  const submittedTasks: MeilisearchTask[] = [];
+  let deleteTask: MeilisearchTask | null = null;
+
+  if (mode === "replace") {
+    console.log(`[indexer] clearing messages index "${targetIndexName}" before streaming...`);
+    deleteTask = await deleteAllDocuments(targetIndexName, {
+      customMetadata: options?.customMetadataPrefix ? `${options.customMetadataPrefix}:delete-all` : undefined,
+    });
+    await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
+  }
 
   // Track seen messages to deduplicate across tables
   const seen = new Set<string>();
@@ -437,8 +569,11 @@ async function streamIndexMessages(
     pendingDocs = [];
 
     const chunks = chunkArray(toUpload, config.batchSize);
-    await runWithConcurrency(chunks, config.uploadConcurrency, async (chunk) => {
-      const task = await uploadFn(SEARCH_INDEXES.messages, chunk);
+    await runWithConcurrency(chunks, config.uploadConcurrency, async (chunk, idx) => {
+      const task = await uploadFn(targetIndexName, chunk, {
+        customMetadata: options?.customMetadataPrefix ? `${options.customMetadataPrefix}:messages-${totalIndexed + idx + 1}` : undefined,
+      });
+      submittedTasks.push(task);
       await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
     });
 
@@ -533,7 +668,15 @@ async function streamIndexMessages(
   }
 
   console.log(`[indexer] messages: ALL PHASES DONE — ${totalIndexed} total documents indexed (${seen.size} unique messages)`);
-  return totalIndexed;
+  const taskSummary = collectTaskSummary(submittedTasks);
+  return {
+    count: totalIndexed,
+    taskUids: deleteTask ? [deleteTask.taskUid, ...taskSummary.taskUids] : taskSummary.taskUids,
+    batchUids: Array.from(new Set([
+      ...(deleteTask && typeof deleteTask.batchUid === "number" ? [deleteTask.batchUid] : []),
+      ...taskSummary.batchUids,
+    ])),
+  };
 }
 
 export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | "messages"> = ["profiles", "chats", "messages"]) {
@@ -561,6 +704,11 @@ export async function reindexSearchDocuments() {
   console.log("[indexer] === FULL REINDEX START ===");
   const startTime = Date.now();
   const config = getIndexerConfig();
+  const run = await createSearchIndexRun({
+    mode: "full_reindex",
+    scopes: ["profiles", "chats", "messages"],
+  });
+  const shadowIndexes = createShadowIndexes(run.id);
   console.log(
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
     `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
@@ -570,39 +718,151 @@ export async function reindexSearchDocuments() {
     `messagePhases=${config.reindexPhases.join(" -> ")}`
   );
 
-  await configureSearchIndices();
+  try {
+    await updateSearchIndexRun(run.id, {
+      metadata: {
+        liveIndexes: SEARCH_INDEXES,
+        shadowIndexes,
+      },
+    });
+    await configureSearchIndices(shadowIndexes);
 
-  // Load all reference data from Cassandra in parallel
-  console.log("[indexer] loading users and chats from Cassandra (parallel)...");
-  const [users, chats] = await Promise.all([listAllUsers(), listAllChats()]);
-  console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats`);
+    // Load all reference data from Cassandra in parallel
+    console.log("[indexer] loading users and chats from Cassandra (parallel)...");
+    const [users, chats] = await Promise.all([listAllUsers(), listAllChats()]);
+    console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats`);
 
-  const userIds = users.map(u => u.user_id);
-  const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
-  console.log(`[indexer] loaded history for ${historyMap.size} users`);
+    const userIds = users.map(u => u.user_id);
+    const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
+    console.log(`[indexer] loaded history for ${historyMap.size} users`);
 
-  const userMap = new Map(users.map(u => [u.user_id, u]));
-  const chatMap = new Map(chats.map(c => [c.chat_id, c]));
+    await updateSearchIndexRun(run.id, {
+      sourceCounts: {
+        profiles: users.length,
+        chats: chats.length,
+      },
+    });
 
-  // Index all three types in parallel — each one clears its own index independently
-  console.log("[indexer] indexing profiles, chats, and messages in parallel...");
-  const [,, messageCount] = await Promise.all([
-    replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap), config),
-    replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats), config),
-    streamIndexMessages(userMap, chatMap, "replace", config),
-  ]);
+    const userMap = new Map(users.map(u => [u.user_id, u]));
+    const chatMap = new Map(chats.map(c => [c.chat_id, c]));
 
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[indexer] === FULL REINDEX COMPLETE in ${elapsed}s ===`);
+    console.log("[indexer] indexing profiles, chats, and messages into shadow indexes...");
+    const [profileSummary, chatSummary, messageSummary] = await Promise.all([
+      replaceIndexDocuments(
+        shadowIndexes.profiles,
+        buildProfileDocuments(users, historyMap),
+        config,
+        `run:${run.id}:profiles`
+      ),
+      replaceIndexDocuments(
+        shadowIndexes.chats,
+        buildChatDocuments(chats),
+        config,
+        `run:${run.id}:chats`
+      ),
+      streamIndexMessages(userMap, chatMap, "replace", config, {
+        indexName: shadowIndexes.messages,
+        phases: config.reindexPhases,
+        customMetadataPrefix: `run:${run.id}:messages`,
+      }),
+    ]);
 
-  return {
-    profiles: users.length,
-    chats: chats.length,
-    messages: messageCount as number,
-  };
+    const [profileStats, chatStats, messageStats] = await Promise.all([
+      getIndexStats(shadowIndexes.profiles),
+      getIndexStats(shadowIndexes.chats),
+      getIndexStats(shadowIndexes.messages),
+    ]);
+
+    if ((profileStats.numberOfDocuments ?? 0) !== users.length) {
+      throw new Error(`Profile shadow index validation failed: expected ${users.length}, received ${profileStats.numberOfDocuments ?? 0}`);
+    }
+    if ((chatStats.numberOfDocuments ?? 0) !== chats.length) {
+      throw new Error(`Chat shadow index validation failed: expected ${chats.length}, received ${chatStats.numberOfDocuments ?? 0}`);
+    }
+    if ((messageStats.numberOfDocuments ?? 0) !== messageSummary.count) {
+      throw new Error(`Message shadow index validation failed: expected ${messageSummary.count}, received ${messageStats.numberOfDocuments ?? 0}`);
+    }
+
+    const allTaskUids = [
+      ...profileSummary.taskUids,
+      ...chatSummary.taskUids,
+      ...messageSummary.taskUids,
+    ];
+    const allBatchUids = [
+      ...profileSummary.batchUids,
+      ...chatSummary.batchUids,
+      ...messageSummary.batchUids,
+    ];
+    const progressSummary = await buildBatchProgressSummary(allBatchUids);
+
+    await updateSearchIndexRun(run.id, {
+      indexedCounts: {
+        profiles: profileSummary.count,
+        chats: chatSummary.count,
+        messages: messageSummary.count,
+      },
+      taskUids: allTaskUids,
+      batchUids: allBatchUids,
+      progressSummary: {
+        ...progressSummary,
+        validation: {
+          profiles: profileStats.numberOfDocuments ?? 0,
+          chats: chatStats.numberOfDocuments ?? 0,
+          messages: messageStats.numberOfDocuments ?? 0,
+        },
+      },
+    });
+
+    const swapTask = await swapIndexes([
+      { indexes: [SEARCH_INDEXES.profiles, shadowIndexes.profiles] },
+      { indexes: [SEARCH_INDEXES.chats, shadowIndexes.chats] },
+      { indexes: [SEARCH_INDEXES.messages, shadowIndexes.messages] },
+    ]);
+    const completedSwapTask = await waitForTask(swapTask.taskUid, INDEX_TASK_TIMEOUT);
+
+    if (config.autoPruneShadowIndexes) {
+      await Promise.all([
+        deleteIndex(shadowIndexes.profiles),
+        deleteIndex(shadowIndexes.chats),
+        deleteIndex(shadowIndexes.messages),
+      ]);
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[indexer] === FULL REINDEX COMPLETE in ${elapsed}s ===`);
+
+    await markSearchIndexRunSucceeded(run.id, {
+      taskUids: [swapTask.taskUid],
+      batchUids: typeof completedSwapTask.batchUid === "number" ? [completedSwapTask.batchUid] : [],
+      progressSummary: {
+        swapped: true,
+        elapsedSeconds: Number(elapsed),
+      },
+      metadata: {
+        shadowIndexes,
+        liveIndexes: SEARCH_INDEXES,
+        autoPrunedShadowIndexes: config.autoPruneShadowIndexes,
+      },
+    });
+
+    return {
+      profiles: users.length,
+      chats: chats.length,
+      messages: messageSummary.count,
+      runId: run.id,
+      shadowIndexes,
+    };
+  } catch (error) {
+    await markSearchIndexRunFailed(run.id, error, {
+      metadata: {
+        shadowIndexes,
+      },
+    });
+    throw error;
+  }
 }
 
-export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | "messages">) {
+export async function legacySyncSearchDocuments(scopes?: Array<"profiles" | "chats" | "messages">) {
   const normalizedScopes: Array<"profiles" | "chats" | "messages"> =
     scopes && scopes.length > 0 ? scopes : ["profiles", "chats", "messages"];
 
@@ -636,17 +896,20 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
   if (normalizedScopes.includes("profiles")) {
     const userIds = users.map(u => u.user_id);
     const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
-    await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap), config);
+    await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap), config, "legacy-sync:profiles");
     profileCount = users.length;
   }
   if (normalizedScopes.includes("chats")) {
-    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats), config);
+    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats), config, "legacy-sync:chats");
     chatCount = chats.length;
   }
   if (normalizedScopes.includes("messages")) {
     const userMap = new Map(users.map(u => [u.user_id, u]));
     const chatMap = new Map(chats.map(c => [c.chat_id, c]));
-    messageCount = await streamIndexMessages(userMap, chatMap, "sync", config);
+    const messageSummary = await streamIndexMessages(userMap, chatMap, "sync", config, {
+      customMetadataPrefix: "legacy-sync:messages",
+    });
+    messageCount = messageSummary.count;
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -657,4 +920,8 @@ export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | 
     chats: chatCount,
     messages: messageCount,
   };
+}
+
+export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | "messages">) {
+  return legacySyncSearchDocuments(scopes);
 }

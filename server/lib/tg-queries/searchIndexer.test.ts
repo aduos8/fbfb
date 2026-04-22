@@ -3,9 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const searchIndexMocks = vi.hoisted(() => ({
   configureSearchIndices: vi.fn(),
   deleteAllDocuments: vi.fn(),
+  deleteIndex: vi.fn(),
+  getBatch: vi.fn(),
+  getIndexStats: vi.fn(),
   replaceDocuments: vi.fn(),
+  swapIndexes: vi.fn(),
   updateDocuments: vi.fn(),
   waitForTask: vi.fn(),
+}));
+
+const dbSearchIndexingMocks = vi.hoisted(() => ({
+  createSearchIndexRun: vi.fn(),
+  markSearchIndexRunFailed: vi.fn(),
+  markSearchIndexRunSucceeded: vi.fn(),
+  updateSearchIndexRun: vi.fn(),
 }));
 
 const queryMocks = vi.hoisted(() => ({
@@ -40,9 +51,20 @@ vi.mock("./searchIndex", () => ({
   },
   configureSearchIndices: searchIndexMocks.configureSearchIndices,
   deleteAllDocuments: searchIndexMocks.deleteAllDocuments,
+  deleteIndex: searchIndexMocks.deleteIndex,
+  getBatch: searchIndexMocks.getBatch,
+  getIndexStats: searchIndexMocks.getIndexStats,
   replaceDocuments: searchIndexMocks.replaceDocuments,
+  swapIndexes: searchIndexMocks.swapIndexes,
   updateDocuments: searchIndexMocks.updateDocuments,
   waitForTask: searchIndexMocks.waitForTask,
+}));
+
+vi.mock("../db/searchIndexing", () => ({
+  createSearchIndexRun: dbSearchIndexingMocks.createSearchIndexRun,
+  markSearchIndexRunFailed: dbSearchIndexingMocks.markSearchIndexRunFailed,
+  markSearchIndexRunSucceeded: dbSearchIndexingMocks.markSearchIndexRunSucceeded,
+  updateSearchIndexRun: dbSearchIndexingMocks.updateSearchIndexRun,
 }));
 
 vi.mock("./queries", () => ({
@@ -58,7 +80,7 @@ vi.mock("./queries", () => ({
   streamAllMessagesFromUsers: queryMocks.streamAllMessagesFromUsers,
 }));
 
-const { buildMessageDocumentsFromMaps, reindexSearchDocuments, syncSearchDocuments } = await import("./searchIndexer");
+const { buildMessageDocumentsFromMaps, legacySyncSearchDocuments, reindexSearchDocuments } = await import("./searchIndexer");
 
 function pages<T>(...items: T[][]): AsyncGenerator<T[]> {
   return (async function* () {
@@ -98,12 +120,26 @@ beforeEach(() => {
   delete process.env.SEARCH_INDEX_MESSAGE_SCAN_MODE;
   delete process.env.SEARCH_INDEX_BUCKET_START_YEAR;
   delete process.env.SEARCH_INDEX_BUCKET_START_MONTH;
+  delete process.env.SEARCH_INDEX_AUTO_PRUNE_SHADOW_INDEXES;
 
   searchIndexMocks.configureSearchIndices.mockResolvedValue(undefined);
-  searchIndexMocks.deleteAllDocuments.mockResolvedValue({ taskUid: 1 });
-  searchIndexMocks.replaceDocuments.mockResolvedValue({ taskUid: 2 });
-  searchIndexMocks.updateDocuments.mockResolvedValue({ taskUid: 3 });
-  searchIndexMocks.waitForTask.mockResolvedValue(undefined);
+  searchIndexMocks.deleteAllDocuments.mockResolvedValue({ taskUid: 1, batchUid: 1 });
+  searchIndexMocks.deleteIndex.mockResolvedValue({ taskUid: 6, batchUid: 6 });
+  searchIndexMocks.getBatch.mockResolvedValue({ uid: 1, progressTrace: {} });
+  searchIndexMocks.getIndexStats.mockImplementation(async (uid: string) => {
+    if (uid.includes("profiles")) return { numberOfDocuments: 1 };
+    if (uid.includes("chats")) return { numberOfDocuments: 1 };
+    return { numberOfDocuments: 1 };
+  });
+  searchIndexMocks.replaceDocuments.mockResolvedValue({ taskUid: 2, batchUid: 2 });
+  searchIndexMocks.swapIndexes.mockResolvedValue({ taskUid: 4, batchUid: 4 });
+  searchIndexMocks.updateDocuments.mockResolvedValue({ taskUid: 3, batchUid: 3 });
+  searchIndexMocks.waitForTask.mockImplementation(async (taskUid: number) => ({ taskUid, batchUid: taskUid }));
+
+  dbSearchIndexingMocks.createSearchIndexRun.mockResolvedValue({ id: "run-1234" });
+  dbSearchIndexingMocks.markSearchIndexRunFailed.mockResolvedValue(undefined);
+  dbSearchIndexingMocks.markSearchIndexRunSucceeded.mockResolvedValue(undefined);
+  dbSearchIndexingMocks.updateSearchIndexRun.mockResolvedValue(undefined);
 
   queryMocks.listAllUsers.mockResolvedValue(users);
   queryMocks.listAllChats.mockResolvedValue(chats);
@@ -162,9 +198,9 @@ beforeEach(() => {
   );
 });
 
-describe("searchIndexer phase selection", () => {
-  it("keeps sync comprehensive by default with full table scans", async () => {
-    const result = await syncSearchDocuments(["messages"]);
+describe("searchIndexer behavior", () => {
+  it("keeps legacy sync comprehensive by default with full table scans", async () => {
+    const result = await legacySyncSearchDocuments(["messages"]);
 
     expect(queryMocks.streamAllMessagesFromChatTable).toHaveBeenCalledWith(10000);
     expect(queryMocks.streamAllMessagesFromUserTable).toHaveBeenCalledWith(10000);
@@ -175,10 +211,10 @@ describe("searchIndexer phase selection", () => {
     expect(result.messages).toBe(3);
   });
 
-  it("restores required phases even when env tries to narrow sync coverage", async () => {
+  it("restores required phases even when env tries to narrow legacy sync coverage", async () => {
     process.env.SEARCH_INDEX_SYNC_PHASES = "messages_by_chat,messages_by_id";
 
-    const result = await syncSearchDocuments(["messages"]);
+    const result = await legacySyncSearchDocuments(["messages"]);
 
     expect(queryMocks.streamAllMessagesFromChatTable).toHaveBeenCalledTimes(1);
     expect(queryMocks.streamAllMessagesFromUserTable).toHaveBeenCalledTimes(1);
@@ -186,24 +222,30 @@ describe("searchIndexer phase selection", () => {
     expect(result.messages).toBe(3);
   });
 
-  it("keeps full reindex comprehensive by default", async () => {
+  it("rebuilds shadow indexes from chat-backed message scans and swaps atomically", async () => {
     const result = await reindexSearchDocuments();
 
     expect(queryMocks.streamAllMessagesFromChatTable).toHaveBeenCalledTimes(1);
-    expect(queryMocks.streamAllMessagesFromUserTable).toHaveBeenCalledTimes(1);
-    expect(queryMocks.streamAllMessages).toHaveBeenCalledTimes(1);
-    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalled();
-    expect(result.messages).toBe(3);
+    expect(queryMocks.streamAllMessagesFromUserTable).not.toHaveBeenCalled();
+    expect(queryMocks.streamAllMessages).not.toHaveBeenCalled();
+    expect(searchIndexMocks.configureSearchIndices).toHaveBeenCalledWith({
+      profiles: expect.stringContaining("profiles__shadow_"),
+      chats: expect.stringContaining("chats__shadow_"),
+      messages: expect.stringContaining("messages__shadow_"),
+    });
+    expect(searchIndexMocks.swapIndexes).toHaveBeenCalledTimes(1);
+    expect(dbSearchIndexingMocks.markSearchIndexRunSucceeded).toHaveBeenCalledTimes(1);
+    expect(result.messages).toBe(1);
   });
 
-  it("can still use partition scans when explicitly requested", async () => {
+  it("can still use partition scans when explicitly requested for legacy sync", async () => {
     process.env.SEARCH_INDEX_CHAT_SCAN_CONCURRENCY = "6";
     process.env.SEARCH_INDEX_USER_SCAN_CONCURRENCY = "3";
     process.env.SEARCH_INDEX_MESSAGE_SCAN_MODE = "partition_scan";
     process.env.SEARCH_INDEX_BUCKET_START_YEAR = "2015";
     process.env.SEARCH_INDEX_BUCKET_START_MONTH = "4";
 
-    await reindexSearchDocuments();
+    await legacySyncSearchDocuments(["messages"]);
 
     expect(queryMocks.streamAllMessagesFromChatTable).not.toHaveBeenCalled();
     expect(queryMocks.streamAllMessagesFromUserTable).not.toHaveBeenCalled();
@@ -240,6 +282,7 @@ describe("message document enrichment", () => {
       bucket: "202403",
       senderUsername: "alice",
       chatTitle: "General",
+      content: "hello",
     });
   });
 });
