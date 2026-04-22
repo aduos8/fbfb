@@ -174,8 +174,39 @@ export async function searchUsers(query: string, limit = 25, offset = 0): Promis
 
 export async function listAllUsers(): Promise<UserRecord[]> {
   const client = getClient();
-  const result = await client.execute("SELECT * FROM users", [], { fetchSize: 500000 });
-  return result.rows as unknown as UserRecord[];
+  const allRows: unknown[] = [];
+  let pageState: Buffer | null = null;
+  let pageNum = 0;
+
+  do {
+    const result = await client.execute("SELECT * FROM users", [], {
+      fetchSize: 10000,
+      pageState: pageState as any,
+    });
+    allRows.push(...result.rows);
+    pageState = (result as any).pageState ?? null;
+    pageNum++;
+    if (pageNum % 10 === 0) {
+      console.log(`[listAllUsers] fetched ${allRows.length} rows (${pageNum} pages)...`);
+    }
+  } while (pageState);
+
+  console.log(`[listAllUsers] total: ${allRows.length} rows`);
+  return allRows as unknown as UserRecord[];
+}
+
+export async function* streamAllUsers(fetchSize = 5000): AsyncGenerator<UserRecord[]> {
+  const client = getClient();
+  let pageState: Buffer | null = null;
+
+  do {
+    const result = await client.execute("SELECT * FROM users", [], {
+      fetchSize,
+      pageState: pageState as any,
+    });
+    yield result.rows as unknown as UserRecord[];
+    pageState = (result as any).pageState ?? null;
+  } while (pageState);
 }
 
 // Chat queries
@@ -237,15 +268,39 @@ export async function searchChats(query: string, chatType?: string, limit = 25, 
 
 export async function listAllChats(): Promise<ChatRecord[]> {
   const client = getClient();
-  const result = await client.execute("SELECT * FROM chats", [], { fetchSize: 10000 });
-  const chats: unknown[] = [...result.rows];
+  const allRows: unknown[] = [];
+  let pageState: Buffer | null = null;
+  let pageNum = 0;
 
-  while (result.nextPage) {
-    const next = await (result.nextPage as () => Promise<{ rows: unknown[] }>)();
-    chats.push(...next.rows);
-  }
+  do {
+    const result = await client.execute("SELECT * FROM chats", [], {
+      fetchSize: 10000,
+      pageState: pageState as any,
+    });
+    allRows.push(...result.rows);
+    pageState = (result as any).pageState ?? null;
+    pageNum++;
+    if (pageNum % 10 === 0) {
+      console.log(`[listAllChats] fetched ${allRows.length} rows (${pageNum} pages)...`);
+    }
+  } while (pageState);
 
-  return chats as unknown as ChatRecord[];
+  console.log(`[listAllChats] total: ${allRows.length} rows`);
+  return allRows as unknown as ChatRecord[];
+}
+
+export async function* streamAllChats(fetchSize = 5000): AsyncGenerator<ChatRecord[]> {
+  const client = getClient();
+  let pageState: Buffer | null = null;
+
+  do {
+    const result = await client.execute("SELECT * FROM chats", [], {
+      fetchSize,
+      pageState: pageState as any,
+    });
+    yield result.rows as unknown as ChatRecord[];
+    pageState = (result as any).pageState ?? null;
+  } while (pageState);
 }
 
 // Message queries
@@ -298,15 +353,39 @@ export async function searchMessages(keyword: string, limit = 100): Promise<Mess
 
 export async function listAllMessages(): Promise<MessageRecord[]> {
   const client = getClient();
-  const result = await client.execute("SELECT * FROM messages_by_id ALLOW FILTERING", [], { fetchSize: 10000 });
-  const messages: unknown[] = [...result.rows];
+  const allRows: unknown[] = [];
+  let pageState: Buffer | null = null;
+  let pageNum = 0;
 
-  while (result.nextPage) {
-    const next = await (result.nextPage as () => Promise<{ rows: unknown[] }>)();
-    messages.push(...next.rows);
-  }
+  do {
+    const result = await client.execute("SELECT * FROM messages_by_id", [], {
+      fetchSize: 10000,
+      pageState: pageState as any,
+    });
+    allRows.push(...result.rows);
+    pageState = (result as any).pageState ?? null;
+    pageNum++;
+    if (pageNum % 10 === 0) {
+      console.log(`[listAllMessages] fetched ${allRows.length} rows (${pageNum} pages)...`);
+    }
+  } while (pageState);
 
-  return messages as unknown as MessageRecord[];
+  console.log(`[listAllMessages] total: ${allRows.length} rows`);
+  return allRows as unknown as MessageRecord[];
+}
+
+export async function* streamAllMessages(fetchSize = 5000): AsyncGenerator<MessageRecord[]> {
+  const client = getClient();
+  let pageState: Buffer | null = null;
+
+  do {
+    const result = await client.execute("SELECT * FROM messages_by_id", [], {
+      fetchSize,
+      pageState: pageState as any,
+    });
+    yield result.rows as unknown as MessageRecord[];
+    pageState = (result as any).pageState ?? null;
+  } while (pageState);
 }
 
 // Participation queries

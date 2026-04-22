@@ -7,7 +7,17 @@ import {
   waitForTask,
 } from "./searchIndex";
 import { containsLink } from "./searchHelpers";
-import { listAllChats, listAllMessages, listAllUsers, getUserHistoryForBatch, type ChatRecord, type MessageRecord, type UserRecord, type HistoryRecordLight } from "./queries";
+import {
+  listAllChats,
+  listAllMessages,
+  listAllUsers,
+  streamAllMessages,
+  getUserHistoryForBatch,
+  type ChatRecord,
+  type MessageRecord,
+  type UserRecord,
+  type HistoryRecordLight,
+} from "./queries";
 
 type ProfileDocument = {
   userId: string;
@@ -168,21 +178,76 @@ export function buildMessageDocuments(messages: MessageRecord[], users: UserReco
   });
 }
 
-async function replaceIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[], chunkSize = 1000) {
-  const deleteTask = await deleteAllDocuments(indexName);
-  await waitForTask(deleteTask.taskUid);
+// Increased timeout (10 min) for large batch indexing operations
+const INDEX_TASK_TIMEOUT = 600_000;
 
+async function replaceIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[], chunkSize = 1000) {
+  console.log(`[indexer] replacing ${documents.length} documents in "${indexName}"...`);
+  const deleteTask = await deleteAllDocuments(indexName);
+  await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
+
+  let indexed = 0;
   for (const chunk of chunkArray(documents, chunkSize)) {
     const task = await replaceDocuments(indexName, chunk);
-    await waitForTask(task.taskUid);
+    await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
+    indexed += chunk.length;
+    if (indexed % 5000 === 0 || indexed === documents.length) {
+      console.log(`[indexer] "${indexName}": ${indexed}/${documents.length} documents indexed`);
+    }
   }
 }
 
 async function syncIndexDocuments<T extends Record<string, unknown>>(indexName: string, documents: T[], chunkSize = 1000) {
+  console.log(`[indexer] syncing ${documents.length} documents into "${indexName}"...`);
+  let indexed = 0;
   for (const chunk of chunkArray(documents, chunkSize)) {
     const task = await updateDocuments(indexName, chunk);
-    await waitForTask(task.taskUid);
+    await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
+    indexed += chunk.length;
+    if (indexed % 5000 === 0 || indexed === documents.length) {
+      console.log(`[indexer] "${indexName}": ${indexed}/${documents.length} documents synced`);
+    }
   }
+}
+
+/**
+ * Stream messages from Cassandra and index them in batches to avoid OOM.
+ * Uses the streamAllMessages generator which yields one page at a time.
+ */
+async function streamIndexMessages(
+  userMap: Map<string, UserRecord>,
+  chatMap: Map<string, ChatRecord>,
+  mode: "replace" | "sync"
+) {
+  if (mode === "replace") {
+    console.log(`[indexer] clearing messages index before streaming...`);
+    const deleteTask = await deleteAllDocuments(SEARCH_INDEXES.messages);
+    await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
+  }
+
+  let totalIndexed = 0;
+  const usersArray = Array.from(userMap.values());
+  const chatsArray = Array.from(chatMap.values());
+
+  for await (const messagePage of streamAllMessages(5000)) {
+    if (messagePage.length === 0) continue;
+
+    const documents = buildMessageDocuments(messagePage, usersArray, chatsArray);
+
+    // Use PUT for replace mode (first batch after delete), POST for sync/subsequent
+    for (const chunk of chunkArray(documents, 1000)) {
+      const task = mode === "replace"
+        ? await replaceDocuments(SEARCH_INDEXES.messages, chunk)
+        : await updateDocuments(SEARCH_INDEXES.messages, chunk);
+      await waitForTask(task.taskUid, INDEX_TASK_TIMEOUT);
+    }
+
+    totalIndexed += messagePage.length;
+    console.log(`[indexer] messages: ${totalIndexed} documents indexed so far...`);
+  }
+
+  console.log(`[indexer] messages: completed — ${totalIndexed} total documents indexed`);
+  return totalIndexed;
 }
 
 export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | "messages"> = ["profiles", "chats", "messages"]) {
@@ -190,52 +255,105 @@ export async function loadSearchSourceData(scopes: Array<"profiles" | "chats" | 
   const needsChats = scopes.includes("chats");
   const needsMessages = scopes.includes("messages");
 
+  console.log(`[indexer] loading source data for scopes: ${scopes.join(", ")}...`);
+
   const [users, chats, messages] = await Promise.all([
-    needsProfiles ? listAllUsers() : Promise.resolve([] as UserRecord[]),
-    needsChats ? listAllChats() : Promise.resolve([] as ChatRecord[]),
+    needsProfiles || needsMessages ? listAllUsers() : Promise.resolve([] as UserRecord[]),
+    needsChats || needsMessages ? listAllChats() : Promise.resolve([] as ChatRecord[]),
     needsMessages ? listAllMessages() : Promise.resolve([] as MessageRecord[]),
   ]);
 
-  const userIds = scopes.includes("profiles") ? users.map(u => u.user_id) : [];
+  console.log(`[indexer] loaded: ${users.length} users, ${chats.length} chats, ${messages.length} messages`);
+
+  const userIds = needsProfiles ? users.map(u => u.user_id) : [];
   const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
 
   return { users, chats, messages, historyMap };
 }
 
 export async function reindexSearchDocuments() {
-  await configureSearchIndices();
-  const { users, chats, messages, historyMap } = await loadSearchSourceData(["profiles", "chats", "messages"]);
+  console.log("[indexer] === FULL REINDEX START ===");
+  const startTime = Date.now();
 
+  await configureSearchIndices();
+
+  // Load users and chats (needed as lookup maps for message enrichment)
+  console.log("[indexer] loading users and chats from Cassandra...");
+  const [users, chats] = await Promise.all([listAllUsers(), listAllChats()]);
+  console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats`);
+
+  // Build user history for profile enrichment
+  const userIds = users.map(u => u.user_id);
+  const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
+  console.log(`[indexer] loaded history for ${historyMap.size} users`);
+
+  // Index profiles
   await replaceIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));
+
+  // Index chats
   await replaceIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
-  await replaceIndexDocuments(SEARCH_INDEXES.messages, buildMessageDocuments(messages, users, chats));
+
+  // Index messages via streaming to avoid OOM
+  const userMap = new Map(users.map(u => [u.user_id, u]));
+  const chatMap = new Map(chats.map(c => [c.chat_id, c]));
+  const messageCount = await streamIndexMessages(userMap, chatMap, "replace");
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[indexer] === FULL REINDEX COMPLETE in ${elapsed}s ===`);
 
   return {
     profiles: users.length,
     chats: chats.length,
-    messages: messages.length,
+    messages: messageCount,
   };
 }
 
 export async function syncSearchDocuments(scopes?: Array<"profiles" | "chats" | "messages">) {
-  await configureSearchIndices();
   const normalizedScopes: Array<"profiles" | "chats" | "messages"> =
     scopes && scopes.length > 0 ? scopes : ["profiles", "chats", "messages"];
-  const { users, chats, messages, historyMap } = await loadSearchSourceData(normalizedScopes);
+
+  console.log(`[indexer] === SYNC START (${normalizedScopes.join(", ")}) ===`);
+  const startTime = Date.now();
+
+  await configureSearchIndices();
+
+  // Always load users + chats if messages are in scope (needed for enrichment)
+  const needsUsers = normalizedScopes.includes("profiles") || normalizedScopes.includes("messages");
+  const needsChats = normalizedScopes.includes("chats") || normalizedScopes.includes("messages");
+
+  const [users, chats] = await Promise.all([
+    needsUsers ? listAllUsers() : Promise.resolve([] as UserRecord[]),
+    needsChats ? listAllChats() : Promise.resolve([] as ChatRecord[]),
+  ]);
+
+  let profileCount = 0;
+  let chatCount = 0;
+  let messageCount = 0;
 
   if (normalizedScopes.includes("profiles")) {
+    const userIds = users.map(u => u.user_id);
+    const historyMap = userIds.length > 0 ? await getUserHistoryForBatch(userIds) : new Map<string, HistoryRecordLight[]>();
     await syncIndexDocuments(SEARCH_INDEXES.profiles, buildProfileDocuments(users, historyMap));
-  }
-  if (normalizedScopes.includes("chats")) {
-    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
-  }
-  if (normalizedScopes.includes("messages")) {
-    await syncIndexDocuments(SEARCH_INDEXES.messages, buildMessageDocuments(messages, users, chats));
+    profileCount = users.length;
   }
 
+  if (normalizedScopes.includes("chats")) {
+    await syncIndexDocuments(SEARCH_INDEXES.chats, buildChatDocuments(chats));
+    chatCount = chats.length;
+  }
+
+  if (normalizedScopes.includes("messages")) {
+    const userMap = new Map(users.map(u => [u.user_id, u]));
+    const chatMap = new Map(chats.map(c => [c.chat_id, c]));
+    messageCount = await streamIndexMessages(userMap, chatMap, "sync");
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[indexer] === SYNC COMPLETE in ${elapsed}s ===`);
+
   return {
-    profiles: normalizedScopes.includes("profiles") ? users.length : 0,
-    chats: normalizedScopes.includes("chats") ? chats.length : 0,
-    messages: normalizedScopes.includes("messages") ? messages.length : 0,
+    profiles: profileCount,
+    chats: chatCount,
+    messages: messageCount,
   };
 }

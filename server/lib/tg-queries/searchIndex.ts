@@ -78,7 +78,7 @@ export async function healthCheckMeilisearch() {
   return request<{ status: string }>("/health");
 }
 
-export async function waitForTask(taskUid: number, timeoutMs = 120_000) {
+export async function waitForTask(taskUid: number, timeoutMs = 600_000) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
