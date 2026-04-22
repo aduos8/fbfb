@@ -10,11 +10,14 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tgosint -d tgosint"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U tgosint -d tgosint"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 15s
     networks:
       - tgosint-net
 
@@ -25,11 +28,14 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 5s
     networks:
       - tgosint-net
 
@@ -40,6 +46,7 @@ services:
       CASSANDRA_CLUSTER_NAME: tgosint-local
       CASSANDRA_DC: datacenter1
       CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       MAX_HEAP_SIZE: "512m"
       HEAP_NEWSIZE: "128m"
     command: >
@@ -49,12 +56,14 @@ services:
       - "9042:9042"
     volumes:
       - cassandra_data:/var/lib/cassandra
+    restart: unless-stopped
+    stop_grace_period: 2m
     healthcheck:
       test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
-      interval: 30s
+      interval: 20s
       timeout: 10s
-      retries: 30
-      start_period: 120s
+      retries: 40
+      start_period: 150s
     networks:
       - tgosint-net
 
