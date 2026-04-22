@@ -388,6 +388,126 @@ export async function* streamAllMessages(fetchSize = 5000): AsyncGenerator<Messa
   } while (pageState);
 }
 
+/**
+ * Generate all monthly bucket keys from a start date to now.
+ * Bucket format: YYYYMM (e.g. "202401")
+ */
+function generateBuckets(startYear = 2020, startMonth = 1): string[] {
+  const buckets: string[] = [];
+  const now = new Date();
+  const endYear = now.getUTCFullYear();
+  const endMonth = now.getUTCMonth() + 1;
+
+  for (let year = startYear; year <= endYear; year++) {
+    const monthStart = year === startYear ? startMonth : 1;
+    const monthEnd = year === endYear ? endMonth : 12;
+    for (let month = monthStart; month <= monthEnd; month++) {
+      buckets.push(`${year}${String(month).padStart(2, "0")}`);
+    }
+  }
+
+  return buckets;
+}
+
+/**
+ * Stream ALL messages from messages_by_chat table.
+ * This table is the complete message store (3M+ rows), unlike messages_by_id (~62k).
+ * It is partitioned by (chat_id, bucket), so we must iterate over each chat and bucket.
+ */
+export async function* streamAllMessagesFromChats(
+  chatIds: string[],
+  fetchSize = 5000
+): AsyncGenerator<MessageRecord[]> {
+  const client = getClient();
+  const buckets = generateBuckets();
+  let totalYielded = 0;
+
+  console.log(`[streamAllMessagesFromChats] scanning ${chatIds.length} chats × ${buckets.length} buckets...`);
+
+  for (let chatIdx = 0; chatIdx < chatIds.length; chatIdx++) {
+    const chatId = chatIds[chatIdx];
+
+    for (const bucket of buckets) {
+      let pageState: Buffer | null = null;
+
+      do {
+        const result = await client.execute(
+          "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_chat WHERE chat_id = ? AND bucket = ?",
+          [chatId, bucket],
+          {
+            prepare: true,
+            fetchSize,
+            pageState: pageState as any,
+          }
+        );
+
+        if (result.rows.length > 0) {
+          yield result.rows as unknown as MessageRecord[];
+          totalYielded += result.rows.length;
+        }
+
+        pageState = (result as any).pageState ?? null;
+      } while (pageState);
+    }
+
+    // Progress every 100 chats
+    if ((chatIdx + 1) % 100 === 0) {
+      console.log(`[streamAllMessagesFromChats] processed ${chatIdx + 1}/${chatIds.length} chats (${totalYielded} messages so far)...`);
+    }
+  }
+
+  console.log(`[streamAllMessagesFromChats] done: ${totalYielded} total messages from ${chatIds.length} chats`);
+}
+
+/**
+ * Stream ALL messages from messages_by_user table.
+ * Partitioned by (user_id, bucket), so we iterate over each user and bucket.
+ */
+export async function* streamAllMessagesFromUsers(
+  userIds: string[],
+  fetchSize = 5000
+): AsyncGenerator<MessageRecord[]> {
+  const client = getClient();
+  const buckets = generateBuckets();
+  let totalYielded = 0;
+
+  console.log(`[streamAllMessagesFromUsers] scanning ${userIds.length} users × ${buckets.length} buckets...`);
+
+  for (let userIdx = 0; userIdx < userIds.length; userIdx++) {
+    const userId = userIds[userIdx];
+
+    for (const bucket of buckets) {
+      let pageState: Buffer | null = null;
+
+      do {
+        const result = await client.execute(
+          "SELECT chat_id, message_id, user_id, content, has_media, timestamp FROM messages_by_user WHERE user_id = ? AND bucket = ?",
+          [userId, bucket],
+          {
+            prepare: true,
+            fetchSize,
+            pageState: pageState as any,
+          }
+        );
+
+        if (result.rows.length > 0) {
+          yield result.rows as unknown as MessageRecord[];
+          totalYielded += result.rows.length;
+        }
+
+        pageState = (result as any).pageState ?? null;
+      } while (pageState);
+    }
+
+    // Progress every 500 users
+    if ((userIdx + 1) % 500 === 0) {
+      console.log(`[streamAllMessagesFromUsers] processed ${userIdx + 1}/${userIds.length} users (${totalYielded} messages so far)...`);
+    }
+  }
+
+  console.log(`[streamAllMessagesFromUsers] done: ${totalYielded} total messages from ${userIds.length} users`);
+}
+
 // Participation queries
 export async function getParticipationMetaByUser(userId: number | string): Promise<ParticipationMetaRecord[]> {
   const client = getClient();

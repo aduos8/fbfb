@@ -12,6 +12,8 @@ import {
   listAllMessages,
   listAllUsers,
   streamAllMessages,
+  streamAllMessagesFromChats,
+  streamAllMessagesFromUsers,
   getUserHistoryForBatch,
   type ChatRecord,
   type MessageRecord,
@@ -234,6 +236,9 @@ async function streamIndexMessages(
   const chatsArray = Array.from(chatMap.values());
   const uploadFn = mode === "replace" ? replaceDocuments : updateDocuments;
 
+  // Track seen messages to deduplicate across tables
+  const seen = new Set<string>();
+
   // Buffer multiple Cassandra pages, then flush in 5k batches
   const FLUSH_THRESHOLD = BATCH_SIZE * 4; // ~20k docs
 
@@ -250,23 +255,58 @@ async function streamIndexMessages(
     }
 
     totalIndexed += toUpload.length;
-    console.log(`[indexer] messages: ${totalIndexed} documents indexed so far...`);
+    console.log(`[indexer] messages: ${totalIndexed} indexed (${seen.size} unique seen)...`);
   }
 
+  function deduplicateAndBuild(messagePage: MessageRecord[]): MessageDocument[] {
+    const newMessages = messagePage.filter(m => {
+      const key = `${m.chat_id}:${m.message_id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (newMessages.length === 0) return [];
+    return buildMessageDocuments(newMessages, usersArray, chatsArray);
+  }
+
+  // === Phase 1: messages_by_chat (largest source) ===
+  const chatIds = Array.from(chatMap.keys());
+  console.log(`[indexer] phase 1/3: streaming messages_by_chat (${chatIds.length} chats)...`);
+  for await (const messagePage of streamAllMessagesFromChats(chatIds, CASSANDRA_PAGE_SIZE)) {
+    if (messagePage.length === 0) continue;
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
+  }
+  await flush();
+  console.log(`[indexer] phase 1 complete: ${totalIndexed} messages from messages_by_chat`);
+
+  // === Phase 2: messages_by_user (catches user-partitioned messages missed above) ===
+  const userIds = Array.from(userMap.keys());
+  console.log(`[indexer] phase 2/3: streaming messages_by_user (${userIds.length} users)...`);
+  const prePhase2 = totalIndexed;
+  for await (const messagePage of streamAllMessagesFromUsers(userIds, CASSANDRA_PAGE_SIZE)) {
+    if (messagePage.length === 0) continue;
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
+  }
+  await flush();
+  console.log(`[indexer] phase 2 complete: +${totalIndexed - prePhase2} new from messages_by_user`);
+
+  // === Phase 3: messages_by_id (catches any remaining) ===
+  console.log(`[indexer] phase 3/3: streaming messages_by_id...`);
+  const prePhase3 = totalIndexed;
   for await (const messagePage of streamAllMessages(CASSANDRA_PAGE_SIZE)) {
     if (messagePage.length === 0) continue;
-    const documents = buildMessageDocuments(messagePage, usersArray, chatsArray);
-    pendingDocs.push(...documents);
-
-    if (pendingDocs.length >= FLUSH_THRESHOLD) {
-      await flush();
-    }
+    const documents = deduplicateAndBuild(messagePage);
+    if (documents.length > 0) pendingDocs.push(...documents);
+    if (pendingDocs.length >= FLUSH_THRESHOLD) await flush();
   }
-
-  // Flush remaining
   await flush();
+  console.log(`[indexer] phase 3 complete: +${totalIndexed - prePhase3} new from messages_by_id`);
 
-  console.log(`[indexer] messages: completed — ${totalIndexed} total documents indexed`);
+  console.log(`[indexer] messages: ALL PHASES DONE — ${totalIndexed} total documents indexed (${seen.size} unique messages)`);
   return totalIndexed;
 }
 
