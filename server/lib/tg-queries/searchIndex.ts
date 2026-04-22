@@ -176,7 +176,7 @@ export async function configureSearchIndices() {
   }
 
   const messageSettingsTask = await updateIndexSettings(SEARCH_INDEXES.messages, {
-    searchableAttributes: ["content", "senderUsername", "senderDisplayName", "chatTitle"],
+    searchableAttributes: ["content", "senderUsername", "senderDisplayName", "chatTitle", "chatUsername"],
     filterableAttributes: ["chatId", "senderId", "senderUsername", "hasMedia", "containsLinks", "contentLength", "timestampMs"],
     sortableAttributes: ["timestampMs"],
     typoTolerance: { enabled: true },
