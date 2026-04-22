@@ -5,7 +5,6 @@ import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { useNavigate } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
-import { setToken, setUserRole } from "@/lib/auth";
 import { toast } from "sonner";
 
 export default function Verify2FA() {
@@ -45,8 +44,6 @@ export default function Verify2FA() {
 
   const verifyMutation = trpc.auth.verify2FA.useMutation({
     onSuccess: (data) => {
-      setToken(data.token);
-      setUserRole(data.user.role || "user");
       sessionStorage.removeItem("pending_2fa_userId");
       toast.success("Welcome back!");
       navigate("/dashboard");

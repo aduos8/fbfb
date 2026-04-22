@@ -146,16 +146,6 @@ export function createServer() {
     });
   });
 
-  app.get("/api/debug/env", (_req, res) => {
-    const oxaKey = process.env.OXAPAY_MERCHANT_KEY;
-    res.json({
-      oxaKey: oxaKey ? oxaKey.slice(0, 4) + '...' + oxaKey.slice(-4) : 'NOT SET',
-      oxaKeyLength: oxaKey?.length,
-      publicUrl: process.env.PUBLIC_URL,
-      pingMessage: process.env.PING_MESSAGE,
-    });
-  });
-
   app.get("/api/demo", handleDemo);
   app.post("/api/demo", express.json({ limit: "10kb" }), handleDemo);
 

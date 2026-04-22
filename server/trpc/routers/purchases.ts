@@ -87,10 +87,11 @@ export const purchasesRouter = t.router({
           callback_url: callbackUrl,
           lifetime: 30,
         });
-      } catch (err: any) {
+      } catch (err) {
+        console.error("[createPurchase] Oxapay error:", err);
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: err.message || 'Failed to create payment. Please try again.',
+          message: 'Failed to create payment. Please try again later.',
         });
       }
 
@@ -269,12 +270,6 @@ export const purchasesRouter = t.router({
       const orderId = `s${shortId}`;
       const callbackUrl = `${process.env.PUBLIC_URL ?? 'http://localhost:8082'}/api/webhooks/oxapay`;
 
-      console.log('[createSubscription] Creating invoice:', {
-        amount: price / 100,
-        order_id: orderId,
-        callback_url: callbackUrl,
-      });
-
       let invoice;
       try {
         invoice = await createInvoice({
@@ -283,12 +278,11 @@ export const purchasesRouter = t.router({
           callback_url: callbackUrl,
           lifetime: 30,
         });
-        console.log('[createSubscription] Invoice created:', invoice);
-      } catch (err: any) {
-        console.error('[createSubscription] Oxapay error:', err.message);
+      } catch (err) {
+        console.error("[createSubscription] Oxapay error:", err);
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: err.message || 'Failed to create payment. Please try again.',
+          message: 'Failed to create payment. Please try again later.',
         });
       }
 

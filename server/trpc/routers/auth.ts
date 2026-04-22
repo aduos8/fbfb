@@ -2,7 +2,14 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db";
-import type { Context } from "../context";
+import {
+  appendSetCookie,
+  clearAuthStateCookie,
+  createAuthStateCookie,
+  createTokenCookie,
+  getTokenCookieOptions,
+  type Context,
+} from "../context";
 
 const t = initTRPC.context<Context>().create();
 
@@ -27,7 +34,7 @@ export const authRouter = t.router({
       email: z.string().email(),
       password: z.string().min(8),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { username, email, password } = input;
 
       const [existingEmail] = await sql<{ id: string }[]>`
@@ -68,12 +75,21 @@ export const authRouter = t.router({
         UPDATE users SET last_login_at = NOW() WHERE id = ${user.id}
       `;
 
-      return { token };
+      appendSetCookie(ctx.res, createTokenCookie(token));
+      appendSetCookie(ctx.res, createAuthStateCookie());
+
+      return {
+        ok: true,
+        user: {
+          email: user.email,
+          role: "customer",
+        },
+      };
     }),
 
   login: publicProcedure
     .input(z.object({ email: z.string(), password: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { email, password } = input;
 
       const [user] = await sql<{
@@ -117,12 +133,15 @@ export const authRouter = t.router({
         UPDATE users SET last_login_at = NOW() WHERE id = ${user.id}
       `;
 
-      return { token, user: { email: user.email, role: user.role } };
+      appendSetCookie(ctx.res, createTokenCookie(token));
+      appendSetCookie(ctx.res, createAuthStateCookie());
+
+      return { ok: true, user: { email: user.email, role: user.role } };
     }),
 
   verify2FA: publicProcedure
     .input(z.object({ userId: z.string(), code: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { userId, code } = input;
 
       const [user] = await sql<{
@@ -171,13 +190,18 @@ export const authRouter = t.router({
         UPDATE users SET last_login_at = NOW() WHERE id = ${user.id}
       `;
 
-      return { token, user: { email: user.email, role: user.role } };
+      appendSetCookie(ctx.res, createTokenCookie(token));
+      appendSetCookie(ctx.res, createAuthStateCookie());
+
+      return { ok: true, user: { email: user.email, role: user.role } };
     }),
 
   logout: protectedProcedure.mutation(async ({ ctx }) => {
     await sql`
       DELETE FROM sessions WHERE user_id = ${ctx.userId}
     `;
+    appendSetCookie(ctx.res, getTokenCookieOptions());
+    appendSetCookie(ctx.res, clearAuthStateCookie());
     return { ok: true };
   }),
 
@@ -252,6 +276,9 @@ export const authRouter = t.router({
       await sql`
         UPDATE users SET password_hash = ${hash}, updated_at = NOW()
         WHERE id = ${record.user_id}
+      `;
+      await sql`
+        DELETE FROM sessions WHERE user_id = ${record.user_id}
       `;
       await sql`
         UPDATE password_reset_tokens SET used = TRUE

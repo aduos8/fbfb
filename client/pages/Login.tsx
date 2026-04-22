@@ -5,7 +5,7 @@ import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
-import { setToken, setUserRole, isAuthenticated } from "@/lib/auth";
+import { isAuthenticated } from "@/lib/auth";
 import { toast } from "sonner";
 
 export default function Login() {
@@ -36,9 +36,7 @@ export default function Login() {
         navigate("/verify-2fa");
         return;
       }
-      if (data.token && data.user) {
-        setToken(data.token);
-        setUserRole((data.user as any).role || "user");
+      if (data.ok && data.user) {
         toast.success(`Welcome back, ${(data.user as any).email || "User"}`);
         navigate("/dashboard");
       }

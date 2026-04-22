@@ -3,7 +3,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db";
 import { listActiveEntitlements } from "../../lib/db/entitlements";
-import type { Context } from "../context";
+import { appendSetCookie, clearAuthStateCookie, getTokenCookieOptions, type Context } from "../context";
 
 const t = initTRPC.context<Context>().create();
 
@@ -110,6 +110,8 @@ export const accountRouter = t.router({
 
       await sql`DELETE FROM sessions WHERE user_id = ${ctx.userId}`;
       await sql`DELETE FROM users WHERE id = ${ctx.userId}`;
+      appendSetCookie(ctx.res, getTokenCookieOptions());
+      appendSetCookie(ctx.res, clearAuthStateCookie());
 
       return { ok: true };
     }),

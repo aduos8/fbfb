@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import gsap from "gsap";
 import { useNavigate } from "react-router-dom";
-import type { ChannelResult, GroupResult, MessageResult, ProfileResult } from "@shared/api";
+import type { ChannelResult, GroupResult, LookupMessage, MessageResult, ProfileResult } from "@shared/api";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import SearchBar from "@/components/SearchBar";
@@ -16,6 +16,10 @@ type SearchState = {
   data: SearchResult[];
   type: string;
 } | null;
+
+type ResultNavigationState = {
+  prefetchedMessage?: LookupMessage;
+};
 
 const searchTypeLabelMap: Record<SearchType, string> = {
   profile: "Profile",
@@ -126,12 +130,28 @@ function HighlightedMarkup({ html }: { html: string }) {
   return <span dangerouslySetInnerHTML={{ __html: sanitizeHighlightedSnippet(html) }} />;
 }
 
+function buildPrefetchedLookupMessage(result: MessageResult): LookupMessage {
+  return {
+    messageId: result.messageId,
+    chatId: result.chatId,
+    timestamp: result.timestamp,
+    content: result.snippet,
+    highlightedSnippet: result.highlightedSnippet,
+    hasMedia: result.hasMedia,
+    containsLinks: result.containsLinks,
+    sender: result.sender,
+    chat: result.chat,
+    contextLink: result.contextLink,
+    redaction: result.redaction,
+  };
+}
+
 function ResultCard({
   result,
   onNavigate,
 }: {
   result: SearchResult;
-  onNavigate: (path: string) => void;
+  onNavigate: (path: string, state?: ResultNavigationState) => void;
 }) {
   const borderRef = useRef<HTMLDivElement>(null);
   const chevronRef = useRef<HTMLDivElement>(null);
@@ -149,7 +169,9 @@ function ResultCard({
         onNavigate(`/lookup/group/${result.telegramChatId}`);
         return;
       case "message":
-        onNavigate(result.contextLink);
+        onNavigate(result.contextLink, {
+          prefetchedMessage: buildPrefetchedLookupMessage(result),
+        });
         return;
     }
   };
@@ -268,10 +290,13 @@ function ResultCard({
         return result.bio || result.basicMetadata.trackingStatus || null;
       case "channel":
         return result.channelDescription
-          || (result.subscriberCount ? `${result.subscriberCount.toLocaleString()} subscribers` : "Subscriber count unavailable");
+          || (result.subscriberCount != null ? `${result.subscriberCount.toLocaleString()} subscribers` : "Subscriber count unavailable");
       case "group":
+        {
+          const memberCount = result.activityMetrics.memberCount ?? result.activityMetrics.participantCount;
         return result.groupDescription
-          || `${result.publicIndicator} ${result.groupType || "group"}${result.activityMetrics.participantCount ? ` · ${result.activityMetrics.participantCount.toLocaleString()} participants` : ""}`;
+          || `${result.publicIndicator} ${result.groupType || "group"}${memberCount != null ? ` · ${memberCount.toLocaleString()} members` : ""}`;
+        }
       case "message":
         return result.chat.title
           ? `in ${result.chat.title}${result.timestamp ? ` · ${new Date(result.timestamp).toLocaleString()}` : ""}`
@@ -482,6 +507,9 @@ export default function Index() {
   }, [results, isLoadingMore]);
 
   const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  const handleNavigate = useCallback((path: string, state?: ResultNavigationState) => {
+    navigate(path, state ? { state } : undefined);
+  }, [navigate]);
 
   return (
     <div className="min-h-screen bg-[#0F0F11] flex flex-col">
@@ -574,7 +602,7 @@ export default function Index() {
                       <ResultCard
                         key={`${result.resultType}-${result.resultType === "profile" ? result.telegramUserId : result.resultType === "message" ? `${result.chatId}:${result.messageId}` : result.telegramChatId}`}
                         result={result}
-                        onNavigate={navigate}
+                        onNavigate={handleNavigate}
                       />
                     ))}
                   </div>

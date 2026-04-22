@@ -6,18 +6,18 @@ services:
     environment:
       PORT: "3000"
       NODE_ENV: "production"
-      POSTGRES_URL: "postgresql://tgosint:tgosint_local@postgres:5432/tgosint"
-      CASSANDRA_CONTACT_POINTS: "cassandra"
-      CASSANDRA_LOCAL_DC: "datacenter1"
-      CASSANDRA_KEYSPACE: "tgosint"
-      CASSANDRA_USERNAME: "cassandra"
-      CASSANDRA_PASSWORD: "cassandra"
-      MEILISEARCH_URL: "http://meilisearch:7700"
-      MEILISEARCH_API_KEY: "local_meili_master_key_change_me"
-      JWT_SECRET: "local_dev_jwt_secret_change_me"
-      PUBLIC_URL: "http://localhost:3000"
-      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:5173"
-      STORAGE_BASE_URL: "http://localhost:3000/api/assets"
+      POSTGRES_URL: "${POSTGRES_URL}"
+      CASSANDRA_CONTACT_POINTS: "${CASSANDRA_CONTACT_POINTS}"
+      CASSANDRA_LOCAL_DC: "${CASSANDRA_LOCAL_DC}"
+      CASSANDRA_KEYSPACE: "${CASSANDRA_KEYSPACE}"
+      CASSANDRA_USERNAME: "${CASSANDRA_USERNAME}"
+      CASSANDRA_PASSWORD: "${CASSANDRA_PASSWORD}"
+      MEILISEARCH_URL: "${MEILISEARCH_URL}"
+      MEILISEARCH_API_KEY: "${MEILISEARCH_API_KEY}"
+      JWT_SECRET: "${JWT_SECRET}"
+      PUBLIC_URL: "${PUBLIC_URL}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS}"
+      STORAGE_BASE_URL: "${STORAGE_BASE_URL}"
       RUN_DB_MIGRATIONS: "true"
       RUN_CASSANDRA_INIT: "true"
       RUN_SEARCH_REINDEX_ON_BOOT: "false"
@@ -41,9 +41,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: "tgosint"
-      POSTGRES_USER: "tgosint"
-      POSTGRES_PASSWORD: "tgosint_local"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     ports:
       - "5432:5432"
     volumes:
@@ -57,9 +57,9 @@ services:
   cassandra:
     image: cassandra:4.1
     environment:
-      CASSANDRA_CLUSTER_NAME: "tgosint-local"
-      CASSANDRA_DC: "datacenter1"
-      CASSANDRA_RACK: "rack1"
+      CASSANDRA_CLUSTER_NAME: "${CASSANDRA_CLUSTER_NAME}"
+      CASSANDRA_DC: "${CASSANDRA_DC}"
+      CASSANDRA_RACK: "${CASSANDRA_RACK}"
       MAX_HEAP_SIZE: "1G"
       HEAP_NEWSIZE: "256m"
     ports:
@@ -76,7 +76,7 @@ services:
   meilisearch:
     image: getmeili/meilisearch:v1.12
     environment:
-      MEILI_MASTER_KEY: "local_meili_master_key_change_me"
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY}"
       MEILI_ENV: "production"
     ports:
       - "7700:7700"

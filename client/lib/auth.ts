@@ -1,36 +1,50 @@
-const TOKEN_KEY = 'auth_token';
-const USER_ROLE_KEY = 'auth_role';
+const AUTH_STATE_COOKIE = "auth_state";
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+function getCookieValue(name: string): string | null {
+  if (typeof document === "undefined") return null;
+
+  const prefix = `${name}=`;
+  const match = document.cookie
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(prefix));
+
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
 }
 
-export function setToken(t: string): void {
-  localStorage.setItem(TOKEN_KEY, t);
+function setCookie(name: string, value: string, maxAgeSeconds: number): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax`;
+}
+
+export function getToken(): string | null {
+  return null;
+}
+
+export function setToken(_t: string): void {
+  setCookie(AUTH_STATE_COOKIE, "1", 7 * 24 * 60 * 60);
 }
 
 export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_ROLE_KEY);
+  if (typeof document === "undefined") return;
+  document.cookie = `${AUTH_STATE_COOKIE}=0; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
 export function isAuthenticated(): boolean {
-  return !!getToken();
+  return getCookieValue(AUTH_STATE_COOKIE) === "1";
 }
 
-export function setUserRole(role: string): void {
-  localStorage.setItem(USER_ROLE_KEY, role);
+export function setUserRole(_role: string): void {
 }
 
 export function getUserRole(): string | null {
-  return localStorage.getItem(USER_ROLE_KEY);
+  return null;
 }
 
 export function isAdmin(): boolean {
-  const role = getUserRole();
-  return role === 'admin' || role === 'owner';
+  return false;
 }
 
 export function isOwner(): boolean {
-  return getUserRole() === 'owner';
+  return false;
 }

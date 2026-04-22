@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
-import { isAuthenticated, clearToken, isAdmin } from "@/lib/auth";
+import { clearToken, isAuthenticated } from "@/lib/auth";
+import { useAuthState } from "@/lib/hooks/useAuthState";
 import { ChevronDown, LogOut, User, CreditCard, ShoppingBag, Coins, Bell, Tag, Activity } from "lucide-react";
 
 export default function Navbar() {
@@ -10,7 +11,17 @@ export default function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const authed = isAuthenticated();
-  const adminMode = isAdmin();
+  const { user, isAdmin: adminMode } = useAuthState();
+  const utils = trpc.useUtils();
+
+  const logoutMutation = trpc.auth.logout.useMutation({
+    onSettled: async () => {
+      clearToken();
+      await utils.invalidate();
+      setMenuOpen(false);
+      navigate("/login");
+    },
+  });
 
   const { data: profile } = trpc.account.getProfile.useQuery(undefined, {
     enabled: authed,
@@ -35,9 +46,7 @@ export default function Navbar() {
   }, []);
 
   const handleLogout = () => {
-    clearToken();
-    setMenuOpen(false);
-    navigate("/login");
+    logoutMutation.mutate();
   };
 
   const isActive = (path: string) => location.pathname === path;
@@ -114,7 +123,7 @@ export default function Navbar() {
               <span className="font-sans font-normal text-[12px] text-white">
                 {typeof profile?.profile === 'object' && (profile.profile as any)?.username
                   ? (profile.profile as any).username
-                  : "User"}
+                  : user?.username || "User"}
               </span>
               <ChevronDown className="w-4 h-4 text-white" />
             </button>

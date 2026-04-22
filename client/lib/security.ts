@@ -1,24 +1,27 @@
-const K = "auth_token";
+const K = "auth_state";
 
 export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(K);
+  if (typeof document === "undefined") return null;
+  const prefix = `${K}=`;
+  const match = document.cookie
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(prefix));
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
 }
 
-export function setToken(t: string): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(K, t);
+export function setToken(_t: string): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${K}=1; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax`;
 }
 
 export function removeToken(): void {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(K);
+  if (typeof document === "undefined") return;
+  document.cookie = `${K}=0; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
 export function isAuthed(): boolean {
-  const t = getToken();
-  if (!t) return false;
-  return t.length >= 32 && t.length <= 512 && /^[a-f0-9]+$/i.test(t);
+  return getToken() === "1";
 }
 
 export function getCsrf(): string | null {

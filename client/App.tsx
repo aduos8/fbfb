@@ -47,9 +47,11 @@ export const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
       url: '/api/trpc',
-      headers() {
-        const token = localStorage.getItem('auth_token');
-        return { Authorization: token ? `Bearer ${token}` : '' };
+      fetch(url, options) {
+        return fetch(url, {
+          ...options,
+          credentials: "include",
+        });
       },
     }),
   ],

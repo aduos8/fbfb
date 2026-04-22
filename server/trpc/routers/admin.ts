@@ -217,6 +217,22 @@ export const adminRouter = t.router({
         if (input.id === ctx.userId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot change your own role" });
         }
+
+        const [targetUser] = await sql<{ role: string }[]>`
+          SELECT role FROM users WHERE id = ${input.id}
+        `;
+        if (!targetUser) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+
+        const actorIsOwner = ctx.userRole === "owner";
+        const targetIsOwner = targetUser.role === "owner";
+        const assigningOwner = input.role === "owner";
+
+        if ((targetIsOwner || assigningOwner) && !actorIsOwner) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can manage owner roles" });
+        }
+
         await sql`
           UPDATE users SET role = ${input.role}, updated_at = NOW()
           WHERE id = ${input.id}

@@ -525,7 +525,7 @@ async function buildChannelResults(
       resultType: "channel",
       channelTitle: document.title ?? null,
       username: document.username ?? null,
-      subscriberCount: document.participantCount ?? document.memberCount ?? null,
+      subscriberCount: document.memberCount ?? document.participantCount ?? null,
       channelDescription: document.description ?? null,
       profilePhoto: toApiServedAssetUrl(document.profilePhoto),
       telegramChatId: document.chatId,
@@ -573,7 +573,7 @@ async function buildGroupResults(
       groupDescription: document.description ?? null,
       activityMetrics: {
         messageCount: null,
-        memberCount: document.memberCount ?? null,
+        memberCount: document.memberCount ?? document.participantCount ?? null,
         participantCount: document.participantCount ?? null,
       },
       relevance: createRelevance(document._rankingScore, reasons),

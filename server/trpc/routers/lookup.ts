@@ -227,7 +227,7 @@ export const lookupRouter = router({
         description: chat.bio ?? null,
         profilePhoto: toApiServedAssetUrl(chat.avatar_url),
         chatType: chat.chat_type ?? null,
-        subscriberCount: chat.member_count ?? null,
+        subscriberCount: chat.member_count ?? chat.participants_count ?? null,
         participantCount: chat.participants_count ?? null,
         publicIndicator: chat.username ? "public" as const : "private" as const,
         createdAt: chat.created_at?.toISOString() ?? null,

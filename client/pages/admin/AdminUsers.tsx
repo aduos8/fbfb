@@ -65,6 +65,8 @@ export default function AdminUsers() {
   const [page, setPage] = useState(0);
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [detailTab, setDetailTab] = useState<"info" | "purchases" | "transactions">("info");
+  const { data: currentUser } = trpc.auth.me.useQuery(undefined, { retry: false });
+  const currentUserIsOwner = currentUser?.role === "owner";
 
   const { data, refetch } = trpc.admin.users.list.useQuery({
     status: statusFilter === "all" ? undefined : statusFilter,
@@ -315,7 +317,7 @@ export default function AdminUsers() {
                             >
                               <option value="user">user</option>
                               <option value="admin">admin</option>
-                              <option value="owner">owner</option>
+                              {currentUserIsOwner && <option value="owner">owner</option>}
                             </select>
                           </div>
                         ) : (

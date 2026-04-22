@@ -1,22 +1,27 @@
-import { Client } from "cassandra-driver";
+import { Client, auth } from "cassandra-driver";
 
 const CASSANDRA_HOSTS = process.env.CASSANDRA_HOSTS || "localhost:9042";
 const CASSANDRA_KEYSPACE = process.env.CASSANDRA_KEYSPACE || "tgosint";
-const CASSANDRA_USER = process.env.CASSANDRA_USER || "cassandra";
-const CASSANDRA_PASSWORD = process.env.CASSANDRA_PASSWORD || "cassandra";
+const CASSANDRA_USER = process.env.CASSANDRA_USER || "";
+const CASSANDRA_PASSWORD = process.env.CASSANDRA_PASSWORD || "";
 
-const cassandraClient = new Client({
+const cassandraOptions: ConstructorParameters<typeof Client>[0] = {
   contactPoints: CASSANDRA_HOSTS.split(","),
   localDataCenter: "datacenter1",
-  credentials: {
-    username: CASSANDRA_USER,
-    password: CASSANDRA_PASSWORD,
-  },
   keyspace: CASSANDRA_KEYSPACE,
   pooling: {
     maxRequestsPerConnection: 1024,
   },
-});
+};
+
+if (CASSANDRA_USER && CASSANDRA_PASSWORD) {
+  cassandraOptions.authProvider = new auth.PlainTextAuthProvider(
+    CASSANDRA_USER,
+    CASSANDRA_PASSWORD
+  );
+}
+
+const cassandraClient = new Client(cassandraOptions);
 
 export const cassandraSession = cassandraClient;
 

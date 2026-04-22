@@ -21,6 +21,8 @@ export default function ChannelLookup() {
 
   const chatData = data as LookupChat | null;
   const avatar = chatData?.profilePhoto || `https://i.pravatar.cc/150?u=${chatData?.telegramChatId || id}`;
+  const subscriberCount = chatData?.subscriberCount ?? chatData?.participantCount ?? null;
+  const showParticipantCount = chatData?.participantCount != null && chatData.participantCount !== subscriberCount;
 
   return (
     <div className="min-h-screen bg-[#0F0F11]">
@@ -87,8 +89,10 @@ export default function ChannelLookup() {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <StatCard label="Subscribers" value={chatData.subscriberCount ? chatData.subscriberCount.toLocaleString() : "Unavailable"} />
-                <StatCard label="Participants" value={chatData.participantCount ? chatData.participantCount.toLocaleString() : "Unavailable"} />
+                <StatCard label="Subscribers" value={subscriberCount != null ? subscriberCount.toLocaleString() : "Unavailable"} />
+                {showParticipantCount && (
+                  <StatCard label="Participants" value={chatData.participantCount!.toLocaleString()} />
+                )}
                 <StatCard label="Created" value={chatData.createdAt ? new Date(chatData.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "Unknown"} />
                 <StatCard label="Updated" value={chatData.updatedAt ? new Date(chatData.updatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "Unknown"} />
               </div>

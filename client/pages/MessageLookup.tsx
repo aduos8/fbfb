@@ -1,21 +1,37 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import type { LookupMessage } from "@shared/api";
 import { ArrowLeft } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
+function sanitizeHighlightedSnippet(rawHtml: string) {
+  const escaped = rawHtml
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  return escaped
+    .replace(/&lt;mark&gt;/g, "<mark>")
+    .replace(/&lt;\/mark&gt;/g, "</mark>");
+}
+
 function HighlightedMarkup({ html }: { html: string }) {
-  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div dangerouslySetInnerHTML={{ __html: sanitizeHighlightedSnippet(html) }} />;
 }
 
 export default function MessageLookup() {
   const { chatId, messageId } = useParams<{ chatId: string; messageId: string }>();
+  const location = useLocation();
+  const prefetchedMessage = (location.state as { prefetchedMessage?: LookupMessage } | null)?.prefetchedMessage ?? null;
 
   const { data, isLoading, error } = trpc.lookup.getMessage.useQuery(
     { chatId: chatId!, messageId: messageId! },
     { enabled: !!chatId && !!messageId }
   );
 
-  const message = data as LookupMessage | null;
+  const message = (data as LookupMessage | null) ?? prefetchedMessage;
+  const isPreviewOnly = !data && !!prefetchedMessage;
 
   return (
     <div className="min-h-screen bg-[#0F0F11]">
@@ -60,6 +76,13 @@ export default function MessageLookup() {
           {message && !isLoading && (
             <div className="space-y-6">
               <div className="card-border-gradient rounded-[20px] p-6 md:p-8">
+                {isPreviewOnly && (
+                  <div className="mb-4 rounded-[10px] border border-[rgba(58,42,238,0.2)] bg-[rgba(58,42,238,0.08)] px-4 py-3">
+                    <p className="font-sans text-[12px] text-white/70">
+                      Full message record unavailable, showing the search preview instead.
+                    </p>
+                  </div>
+                )}
                 <div className="flex items-center gap-3 flex-wrap mb-4">
                   <span className="px-2 py-1 rounded text-[10px] font-medium bg-[rgba(58,42,238,0.2)] text-[#B8A8FF] uppercase">
                     {message.chat.type || "message"}

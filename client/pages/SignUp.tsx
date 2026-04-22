@@ -5,7 +5,7 @@ import Footer from "@/components/Footer";
 import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { trpc } from "@/lib/trpc";
-import { setToken, setUserRole, isAuthenticated } from "@/lib/auth";
+import { isAuthenticated } from "@/lib/auth";
 import { toast } from "sonner";
 
 export default function SignUp() {
@@ -31,9 +31,7 @@ export default function SignUp() {
   const [error, setError] = useState("");
 
   const registerMutation = trpc.auth.register.useMutation({
-    onSuccess: (data) => {
-      setToken(data.token);
-      setUserRole("user");
+    onSuccess: () => {
       toast.success("Account created. Welcome!");
       navigate("/dashboard");
     },

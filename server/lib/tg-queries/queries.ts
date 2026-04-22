@@ -238,10 +238,10 @@ export async function searchChats(query: string, chatType?: string, limit = 25, 
 export async function listAllChats(): Promise<ChatRecord[]> {
   const client = getClient();
   const result = await client.execute("SELECT * FROM chats", [], { fetchSize: 10000 });
-  const chats = [...result.rows];
+  const chats: unknown[] = [...result.rows];
 
   while (result.nextPage) {
-    const next = await result.nextPage();
+    const next = await (result.nextPage as () => Promise<{ rows: unknown[] }>)();
     chats.push(...next.rows);
   }
 
@@ -299,10 +299,10 @@ export async function searchMessages(keyword: string, limit = 100): Promise<Mess
 export async function listAllMessages(): Promise<MessageRecord[]> {
   const client = getClient();
   const result = await client.execute("SELECT * FROM messages_by_id ALLOW FILTERING", [], { fetchSize: 10000 });
-  const messages = [...result.rows];
+  const messages: unknown[] = [...result.rows];
 
   while (result.nextPage) {
-    const next = await result.nextPage();
+    const next = await (result.nextPage as () => Promise<{ rows: unknown[] }>)();
     messages.push(...next.rows);
   }
 
