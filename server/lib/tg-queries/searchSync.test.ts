@@ -65,6 +65,9 @@ vi.mock("./searchIndex", () => ({
     chats: "chats",
     messages: "messages",
   },
+  getSearchBackend: () => "meilisearch",
+  isTrackedSearchTaskId: (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0,
   deleteDocuments: searchIndexMocks.deleteDocuments,
   getBatch: searchIndexMocks.getBatch,
   updateDocuments: searchIndexMocks.updateDocuments,

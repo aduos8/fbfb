@@ -1,5 +1,11 @@
 import { getCassandraClient, shutdownCassandra } from "../lib/tg-queries/queries";
-import { SEARCH_INDEXES, updateDocuments, waitForTask } from "../lib/tg-queries/searchIndex";
+import {
+  SEARCH_INDEXES,
+  deleteDocumentsByFilter,
+  isTrackedSearchTaskId,
+  updateDocuments,
+  waitForTask,
+} from "../lib/tg-queries/searchIndex";
 
 const LOOKBACK_MS = 65 * 60 * 1000;
 const WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -43,7 +49,9 @@ async function sync() {
       timestampMs: row.timestamp ? new Date(row.timestamp).getTime() : null,
     }));
     const t = await updateDocuments(SEARCH_INDEXES.messages, batch);
-    uids.push(t.taskUid);
+    if (isTrackedSearchTaskId(t.taskUid)) {
+      uids.push(t.taskUid);
+    }
   }
 
   await Promise.all(uids.map(uid => waitForTask(uid, 300_000)));
@@ -52,17 +60,12 @@ async function sync() {
 
 async function evict() {
   const cutoff = Date.now() - WINDOW_MS;
-  const r = await fetch(`${process.env.MEILISEARCH_URL}/indexes/messages/documents/delete`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.MEILISEARCH_API_KEY}`,
-    },
-    body: JSON.stringify({ filter: `timestampMs < ${cutoff}` }),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  const t = await r.json() as { taskUid: number };
-  await waitForTask(t.taskUid, 300_000);
+  const task = await deleteDocumentsByFilter(SEARCH_INDEXES.messages, [
+    { field: "timestampMs", operator: "lte", value: cutoff },
+  ]);
+  if (isTrackedSearchTaskId(task.taskUid)) {
+    await waitForTask(task.taskUid, 300_000);
+  }
 }
 
 const mode = process.argv[2] ?? "sync";

@@ -1,9 +1,9 @@
 import "dotenv/config";
-import { configureSearchIndices } from "../lib/tg-queries/searchIndex";
+import { configureSearchIndices, getSearchBackend } from "../lib/tg-queries/searchIndex";
 
 async function main() {
   await configureSearchIndices();
-  console.log("[search:configure] Meilisearch index settings applied");
+  console.log(`[search:configure] ${getSearchBackend()} index configuration applied`);
 }
 
 main().catch((error) => {

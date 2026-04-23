@@ -169,6 +169,106 @@ Stores and indexes:
 
 ---
 
+# **2.5 Search Backend Operations**
+
+The application now supports two search backends:
+
+* **OpenSearch** (default)
+* **Meilisearch** (legacy fallback)
+
+Backend selection is controlled with:
+
+```bash
+SEARCH_BACKEND=opensearch
+```
+
+OpenSearch configuration:
+
+```bash
+OPENSEARCH_URL=http://opensearch:9200
+OPENSEARCH_USERNAME=
+OPENSEARCH_PASSWORD=
+```
+
+Meilisearch fallback configuration:
+
+```bash
+SEARCH_BACKEND=meilisearch
+MEILISEARCH_URL=http://meilisearch:7700
+MEILISEARCH_API_KEY=change_me
+```
+
+## **Initial full indexing runbook**
+
+1. Start PostgreSQL, Cassandra access, and OpenSearch.
+   Local example:
+   `docker compose -f docker-compose.local.yml up -d postgres opensearch`
+2. Apply database migrations:
+   `bun run db:migrate`
+3. Configure the search backend:
+   `bun run search:configure`
+4. Run the first full Cassandra -> search load:
+   `bun run search:reindex`
+5. Start incremental sync processing:
+   `bun run search:sync`
+
+For a one-shot bootstrap that runs migrations, configures the backend, and performs the first full reindex:
+
+```bash
+bun run search:bootstrap
+```
+
+## **Scoped rebuilds**
+
+You can rebuild only selected scopes:
+
+```bash
+bun run search:reindex --scopes=messages
+bun run search:reindex --scopes=profiles,chats
+```
+
+If a full reindex stops midway, you can resume it against the same shadow indexes:
+
+```bash
+bun run search:reindex --resume
+bun run search:reindex --resume --run-id=<search_index_run_uuid>
+```
+
+Resume uses the scopes stored on the original run. If messages were already swapped live early, resume continues the remaining scopes without redoing the live message corpus.
+
+Incremental sync can also be scoped:
+
+```bash
+bun run search:sync --scopes=messages
+```
+
+## **OpenSearch behavior**
+
+* OpenSearch is configured with stable live aliases: `profiles`, `chats`, `messages`
+* Full reindex creates shadow aliases, loads data into shadow backing indexes, validates counts, and atomically swaps aliases live
+* Health checks treat OpenSearch `green` and `yellow` as healthy so single-node deployments pass readiness checks
+* After a successful swap, old backing indexes behind the shadow aliases are pruned automatically when `SEARCH_INDEX_AUTO_PRUNE_SHADOW_INDEXES=true`
+
+## **Docker defaults**
+
+`docker-compose.local.yml` and `docker-compose.coolify.yml` now default to:
+
+* `SEARCH_BACKEND=opensearch`
+* `OPENSEARCH_URL=http://opensearch:9200`
+* single-node OpenSearch on port `9200`
+
+## **Rollback to Meilisearch**
+
+If you need to switch back:
+
+1. Set `SEARCH_BACKEND=meilisearch`
+2. Provide `MEILISEARCH_URL` and `MEILISEARCH_API_KEY`
+3. Run `bun run search:configure`
+4. Run `bun run search:reindex`
+5. Resume `bun run search:sync`
+
+---
+
 # **3\. Landing Page (Search Interface)**
 
 The homepage acts as the **primary search interface**.
@@ -1308,4 +1408,3 @@ Redactions:
 Admin actions:
 
 * Must be logged.
-

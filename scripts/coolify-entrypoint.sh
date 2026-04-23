@@ -38,9 +38,14 @@ if [ "${RUN_CASSANDRA_INIT:-true}" = "true" ]; then
   run_with_retry "cassandra schema init" bun run cassandra:init
 fi
 
+if [ "${RUN_SEARCH_CONFIGURE_ON_BOOT:-true}" = "true" ]; then
+  echo "[entrypoint] configuring search backend"
+  run_with_retry "search configure" bun run search:configure
+fi
+
 if [ "${RUN_SEARCH_REINDEX_ON_BOOT:-false}" = "true" ]; then
-  echo "[entrypoint] rebuilding meilisearch indexes"
-  run_with_retry "meilisearch reindex" bun run search:reindex
+  echo "[entrypoint] rebuilding search indexes"
+  run_with_retry "search reindex" bun run search:reindex
 fi
 
 echo "[entrypoint] starting application"

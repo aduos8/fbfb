@@ -8,13 +8,17 @@ services:
       PORT: "${PORT:-3000}"
       NODE_ENV: "production"
       POSTGRES_URL: "${POSTGRES_URL:?Set POSTGRES_URL}"
-      CASSANDRA_CONTACT_POINTS: "${CASSANDRA_CONTACT_POINTS:-cassandra}"
+      CASSANDRA_CONTACT_POINTS: "${CASSANDRA_CONTACT_POINTS:-host.docker.internal}"
       CASSANDRA_LOCAL_DC: "${CASSANDRA_LOCAL_DC:-datacenter1}"
       CASSANDRA_KEYSPACE: "${CASSANDRA_KEYSPACE:-tgosint}"
-      CASSANDRA_USERNAME: "${CASSANDRA_USERNAME:-cassandra}"
-      CASSANDRA_PASSWORD: "${CASSANDRA_PASSWORD:-cassandra}"
-      MEILISEARCH_URL: "${MEILISEARCH_URL:-http://meilisearch:7700}"
-      MEILISEARCH_API_KEY: "${MEILISEARCH_API_KEY:?Set MEILISEARCH_API_KEY}"
+      CASSANDRA_USERNAME: "${CASSANDRA_USERNAME:-}"
+      CASSANDRA_PASSWORD: "${CASSANDRA_PASSWORD:-}"
+      SEARCH_BACKEND: "${SEARCH_BACKEND:-opensearch}"
+      OPENSEARCH_URL: "${OPENSEARCH_URL:-http://opensearch:9200}"
+      OPENSEARCH_USERNAME: "${OPENSEARCH_USERNAME:-}"
+      OPENSEARCH_PASSWORD: "${OPENSEARCH_PASSWORD:-}"
+      MEILISEARCH_URL: "${MEILISEARCH_URL:-}"
+      MEILISEARCH_API_KEY: "${MEILISEARCH_API_KEY:-}"
       JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET}"
       PUBLIC_URL: "${PUBLIC_URL:?Set PUBLIC_URL}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS}"
@@ -32,22 +36,20 @@ services:
       RUN_SEARCH_REINDEX_ON_BOOT: "${RUN_SEARCH_REINDEX_ON_BOOT:-false}"
       BOOTSTRAP_MAX_RETRIES: "${BOOTSTRAP_MAX_RETRIES:-8}"
       BOOTSTRAP_RETRY_DELAY: "${BOOTSTRAP_RETRY_DELAY:-5}"
-      
-
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
-      cassandra:
-        condition: service_healthy
-      meilisearch:
+      opensearch:
         condition: service_healthy
     volumes:
       - /mnt/hetzner/media:/mnt/hetzner/media:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      test: [ "CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\"" ]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -64,50 +66,30 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-tgosint} -d ${POSTGRES_DB:-tgosint}"]
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-tgosint} -d ${POSTGRES_DB:-tgosint}" ]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 15s
 
-  cassandra:
-    image: cassandra:4.1
+  opensearch:
+    image: opensearchproject/opensearch:2.19.5
     environment:
-      CASSANDRA_CLUSTER_NAME: "${CASSANDRA_CLUSTER_NAME:-tgosint}"
-      CASSANDRA_DC: "${CASSANDRA_LOCAL_DC:-datacenter1}"
-      CASSANDRA_RACK: "${CASSANDRA_RACK:-rack1}"
-      CASSANDRA_ENDPOINT_SNITCH: "${CASSANDRA_ENDPOINT_SNITCH:-GossipingPropertyFileSnitch}"
-      MAX_HEAP_SIZE: "${CASSANDRA_MAX_HEAP_SIZE:-1G}"
-      HEAP_NEWSIZE: "${CASSANDRA_HEAP_NEWSIZE:-256m}"
+      discovery.type: "single-node"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ""
     volumes:
-      - cassandra_data:/var/lib/cassandra
-    restart: unless-stopped
-    stop_grace_period: 2m
-    healthcheck:
-      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 40
-      start_period: 150s
-
-  meilisearch:
-    image: getmeili/meilisearch:v1.12
-    environment:
-      MEILI_MASTER_KEY: "${MEILISEARCH_API_KEY:?Set MEILISEARCH_API_KEY}"
-      MEILI_ENV: "production"
-      MEILI_NO_ANALYTICS: "true"
-    volumes:
-      - meilisearch_data:/meili_data
+      - opensearch_data:/usr/share/opensearch/data
     restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health | grep -q '\"status\":\"available\"'"]
+      test: [ "CMD-SHELL", "curl -sf 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' | grep -q '\"status\"'" ]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 20
-      start_period: 15s
+      start_period: 90s
 
 volumes:
   postgres_data:
-  cassandra_data:
-  meilisearch_data:
+  opensearch_data:

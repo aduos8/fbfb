@@ -13,6 +13,8 @@ import {
 import {
   deleteDocuments,
   getBatch,
+  getSearchBackend,
+  isTrackedSearchTaskId,
   updateDocuments,
   waitForTask,
   SEARCH_INDEXES,
@@ -102,8 +104,10 @@ function createInitialStats(): SyncProcessingStats {
 }
 
 function addTask(stats: SyncProcessingStats, task: MeilisearchTask) {
-  stats.taskUids.push(task.taskUid);
-  if (typeof task.batchUid === "number") {
+  if (isTrackedSearchTaskId(task.taskUid)) {
+    stats.taskUids.push(task.taskUid);
+  }
+  if (isTrackedSearchTaskId(task.batchUid)) {
     stats.batchUids.push(task.batchUid);
   }
 }
@@ -452,6 +456,7 @@ export async function consumeSearchIndexOutbox(scopes?: SearchIndexScope[]) {
       },
       metadata: {
         processedEvents: stats.processedEvents,
+        backend: getSearchBackend(),
       },
       taskUids: stats.taskUids,
       batchUids: stats.batchUids,
@@ -474,6 +479,7 @@ export async function consumeSearchIndexOutbox(scopes?: SearchIndexScope[]) {
       },
       metadata: {
         processedEvents: stats.processedEvents,
+        backend: getSearchBackend(),
       },
       taskUids: stats.taskUids,
       batchUids: stats.batchUids,

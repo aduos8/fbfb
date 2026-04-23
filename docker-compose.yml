@@ -39,38 +39,32 @@ services:
     networks:
       - tgosint-net
 
-  cassandra:
-    image: cassandra:4.1
-    container_name: tgosint-cassandra
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: tgosint-opensearch
     environment:
-      CASSANDRA_CLUSTER_NAME: tgosint-local
-      CASSANDRA_DC: datacenter1
-      CASSANDRA_RACK: rack1
-      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
-      MAX_HEAP_SIZE: "512m"
-      HEAP_NEWSIZE: "128m"
-    command: >
-      sh -c "echo 'sasi_indexes_enabled: true' >> /etc/cassandra/cassandra.yaml
-      && docker-entrypoint.sh cassandra -f"
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
-      - "9042:9042"
+      - "9200:9200"
     volumes:
-      - cassandra_data:/var/lib/cassandra
+      - opensearch_data:/usr/share/opensearch/data
     restart: unless-stopped
-    stop_grace_period: 2m
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 40
-      start_period: 150s
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' | grep -q '\"status\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     networks:
       - tgosint-net
 
 volumes:
   postgres_data:
   redis_data:
-  cassandra_data:
+  opensearch_data:
 
 networks:
   tgosint-net:

@@ -1,4 +1,5 @@
 import { sql } from "../db";
+import { getActiveSearchShadowIndex, type SearchIndexScope } from "../db/searchIndexing";
 import type {
   ChannelResult,
   GroupResult,
@@ -30,7 +31,13 @@ import {
   normalizeHandle,
   snippetFromText,
 } from "./searchHelpers";
-import { SEARCH_INDEXES, searchIndex } from "./searchIndex";
+import {
+  configureSearchIndices,
+  getSearchBackend,
+  SEARCH_INDEXES,
+  searchIndex,
+  type SearchFilterClause,
+} from "./searchIndex";
 import {
   applyResolvedRedaction,
   buildRedactionMetadata,
@@ -108,10 +115,6 @@ type SearchResultPage<T extends SearchResult> = {
   results: T[];
   total: number;
 };
-
-function escapeFilterValue(value: string) {
-  return `"${value.replace(/"/g, '\\"')}"`;
-}
 
 function serializeDate(value: unknown) {
   if (!value) {
@@ -207,6 +210,105 @@ function createRelevance(rawScore: number | undefined, reasons: string[]) {
   };
 }
 
+function isMissingSearchIndex(error: unknown) {
+  return error instanceof Error
+    && (
+      error.message.includes("index_not_found_exception")
+      || error.message.includes("IndexNotFoundException")
+      || error.message.includes("404")
+      || error.message.includes("not found")
+    );
+}
+
+function getSearchResponseTotal<T extends Record<string, unknown>>(response: {
+  estimatedTotalHits?: number;
+  totalHits?: number;
+  hits: T[];
+}) {
+  return response.estimatedTotalHits ?? response.totalHits ?? response.hits.length;
+}
+
+async function searchShadowBackingFallback<T extends Record<string, unknown>>(
+  scope: SearchIndexScope,
+  payload: Parameters<typeof searchIndex<T>>[1],
+  shadowIndex: string,
+  reason: "missing" | "empty"
+) {
+  if (getSearchBackend() !== "opensearch") {
+    return null;
+  }
+
+  try {
+    const response = await searchIndex<T>(`${scope}__shadow_*__backing_v1`, payload);
+    if (getSearchResponseTotal(response) > 0) {
+      console.warn(
+        `[search] recovered ${scope} search results from shadow backing indexes after ${reason} shadow alias "${shadowIndex}"`
+      );
+      return response;
+    }
+  } catch (error) {
+    if (!isMissingSearchIndex(error)) {
+      throw error;
+    }
+  }
+
+  return null;
+}
+
+async function searchPreferredIndex<T extends Record<string, unknown>>(
+  scope: SearchIndexScope,
+  liveIndex: string,
+  payload: Parameters<typeof searchIndex<T>>[1]
+) {
+  const shadowIndex = await getActiveSearchShadowIndex(scope);
+  let missingShadowIndex = false;
+
+  if (shadowIndex && shadowIndex !== liveIndex) {
+    try {
+      const shadowResponse = await searchIndex<T>(shadowIndex, payload);
+      if (getSearchResponseTotal(shadowResponse) > 0 || getSearchBackend() !== "opensearch") {
+        return shadowResponse;
+      }
+
+      const liveResponse = await searchIndex<T>(liveIndex, payload);
+      if (getSearchResponseTotal(liveResponse) > 0) {
+        return liveResponse;
+      }
+
+      const fallbackShadowResponse = await searchShadowBackingFallback(
+        scope,
+        payload,
+        shadowIndex,
+        "empty"
+      );
+      return fallbackShadowResponse ?? liveResponse;
+    } catch (error) {
+      if (!isMissingSearchIndex(error)) {
+        throw error;
+      }
+      missingShadowIndex = true;
+    }
+  }
+
+  const liveResponse = await searchIndex<T>(liveIndex, payload);
+  if (
+    getSearchBackend() === "opensearch"
+    && getSearchResponseTotal(liveResponse) === 0
+  ) {
+    const fallbackShadowResponse = await searchShadowBackingFallback(
+      scope,
+      payload,
+      shadowIndex ?? liveIndex,
+      missingShadowIndex ? "missing" : "empty"
+    );
+    if (fallbackShadowResponse) {
+      return fallbackShadowResponse;
+    }
+  }
+
+  return liveResponse;
+}
+
 async function loadTrackingStatusMap(viewerUserId: string, userIds: string[]) {
   const ids = Array.from(new Set(userIds.filter(Boolean)));
   if (ids.length === 0) {
@@ -269,10 +371,22 @@ function filterChatDocument(document: ChatDocument, input: ChannelSearchInput | 
   return true;
 }
 
+function messageKeywordMatches(document: MessageDocument, keyword: string | undefined) {
+  if (!keyword) {
+    return true;
+  }
+
+  return textIncludes(document.content, keyword)
+    || textIncludes(document.senderUsername, keyword)
+    || textIncludes(document.senderDisplayName, keyword)
+    || textIncludes(document.chatTitle, keyword)
+    || textIncludes(document.chatUsername, keyword);
+}
+
 function filterMessageDocument(document: MessageDocument, input: MessageSearchInput) {
   const filters = input.filters;
   const keyword = cleanSearchValue(filters.keyword ?? input.query);
-  if (keyword && !textIncludes(document.content, keyword)) {
+  if (!messageKeywordMatches(document, keyword)) {
     return false;
   }
   if (filters.chatId && document.chatId !== filters.chatId) {
@@ -309,26 +423,30 @@ function filterMessageDocument(document: MessageDocument, input: MessageSearchIn
 
 function buildProfileFilter(input: ProfileSearchInput) {
   const filters = input.filters;
-  const filterParts: string[] = [];
+  const filterParts: SearchFilterClause[] = [];
   if (filters.userId) {
-    filterParts.push(`userId = ${escapeFilterValue(filters.userId)}`);
+    filterParts.push({ field: "userId", operator: "eq", value: filters.userId });
   }
   const phoneHash = hashPhoneNumber(filters.phone);
   if (phoneHash) {
-    filterParts.push(`phoneHash = ${escapeFilterValue(phoneHash)}`);
+    filterParts.push({ field: "phoneHash", operator: "eq", value: phoneHash });
   }
   return filterParts;
 }
 
 function buildChatFilter(kind: "channel" | "group", input: ChannelSearchInput | GroupSearchInput) {
   const filters = input.filters;
-  const filterParts = [kind === "channel" ? `chatType = "channel"` : `chatType IN ["group", "supergroup"]`];
+  const filterParts: SearchFilterClause[] = [
+    kind === "channel"
+      ? { field: "chatType", operator: "eq", value: "channel" }
+      : { field: "chatType", operator: "in", values: ["group", "supergroup"] },
+  ];
 
   if ("channelId" in filters && filters.channelId) {
-    filterParts.push(`chatId = ${escapeFilterValue(filters.channelId)}`);
+    filterParts.push({ field: "chatId", operator: "eq", value: filters.channelId });
   }
   if ("chatId" in filters && filters.chatId) {
-    filterParts.push(`chatId = ${escapeFilterValue(filters.chatId)}`);
+    filterParts.push({ field: "chatId", operator: "eq", value: filters.chatId });
   }
 
   return filterParts;
@@ -336,41 +454,47 @@ function buildChatFilter(kind: "channel" | "group", input: ChannelSearchInput | 
 
 function buildMessageFilter(input: MessageSearchInput) {
   const filters = input.filters;
-  const filterParts: string[] = [];
+  const filterParts: SearchFilterClause[] = [];
   if (filters.chatId) {
-    filterParts.push(`chatId = ${escapeFilterValue(filters.chatId)}`);
+    filterParts.push({ field: "chatId", operator: "eq", value: filters.chatId });
   }
   if (filters.senderUserId) {
-    filterParts.push(`senderId = ${escapeFilterValue(filters.senderUserId)}`);
+    filterParts.push({ field: "senderId", operator: "eq", value: filters.senderUserId });
   }
   if (filters.senderUsername) {
-    filterParts.push(`senderUsername = ${escapeFilterValue(normalizeHandle(filters.senderUsername) ?? "")}`);
+    const normalized = normalizeHandle(filters.senderUsername);
+    if (normalized) {
+      filterParts.push({ field: "senderUsername", operator: "eq", value: normalized });
+    }
   }
   if (filters.hasMedia !== undefined) {
-    filterParts.push(`hasMedia = ${filters.hasMedia}`);
+    filterParts.push({ field: "hasMedia", operator: "eq", value: filters.hasMedia });
   }
   if (filters.containsLinks !== undefined) {
-    filterParts.push(`containsLinks = ${filters.containsLinks}`);
+    filterParts.push({ field: "containsLinks", operator: "eq", value: filters.containsLinks });
   }
   if (filters.minLength !== undefined) {
-    filterParts.push(`contentLength >= ${filters.minLength}`);
+    filterParts.push({ field: "contentLength", operator: "gte", value: filters.minLength });
   }
   const startMs = numericDate(filters.dateStart);
   const endMs = numericDate(filters.dateEnd);
   if (startMs !== null) {
-    filterParts.push(`timestampMs >= ${startMs}`);
+    filterParts.push({ field: "timestampMs", operator: "gte", value: startMs });
   }
   if (endMs !== null) {
-    filterParts.push(`timestampMs <= ${endMs}`);
+    filterParts.push({ field: "timestampMs", operator: "lte", value: endMs });
   }
   return filterParts;
 }
 
-function buildMessageKeywordSearch(keyword: string | undefined) {
+function buildMessageKeywordSearch(keyword: string | undefined): {
+  q: string;
+  extraFilters: SearchFilterClause[];
+} {
   if (!keyword) {
     return {
       q: "",
-      extraFilters: [] as string[],
+      extraFilters: [] as SearchFilterClause[],
     };
   }
 
@@ -379,15 +503,21 @@ function buildMessageKeywordSearch(keyword: string | undefined) {
     return {
       q: "",
       extraFilters: character
-        ? [`contentCharacterSet = ${escapeFilterValue(character)}`]
+        ? [{ field: "contentCharacterSet", operator: "eq" as const, value: character }]
         : [],
     };
   }
 
   return {
     q: keyword,
-    extraFilters: [] as string[],
+    extraFilters: [] as SearchFilterClause[],
   };
+}
+
+function isMissingContentCharacterSetFilter(error: unknown) {
+  return error instanceof Error
+    && error.message.includes("contentCharacterSet")
+    && error.message.includes("not filterable");
 }
 
 async function searchProfilesViaIndex(input: ProfileSearchInput) {
@@ -397,9 +527,9 @@ async function searchProfilesViaIndex(input: ProfileSearchInput) {
     ?? cleanSearchValue(input.filters.bio)
     ?? "";
 
-  const response = await searchIndex<ProfileDocument>(SEARCH_INDEXES.profiles, {
+  const response = await searchPreferredIndex<ProfileDocument>("profiles", SEARCH_INDEXES.profiles, {
     q: querySource,
-    filter: buildProfileFilter(input),
+    filters: buildProfileFilter(input),
     page: input.page,
     hitsPerPage: input.limit,
     showRankingScore: true,
@@ -420,9 +550,9 @@ async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSear
     ?? cleanSearchValue(input.filters.description)
     ?? "";
 
-  const response = await searchIndex<ChatDocument>(SEARCH_INDEXES.chats, {
+  const response = await searchPreferredIndex<ChatDocument>("chats", SEARCH_INDEXES.chats, {
     q: querySource,
-    filter: buildChatFilter(kind, input),
+    filters: buildChatFilter(kind, input),
     page: input.page,
     hitsPerPage: input.limit,
     showRankingScore: true,
@@ -439,9 +569,9 @@ async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSear
 async function searchMessagesViaIndex(input: MessageSearchInput) {
   const keyword = cleanSearchValue(input.filters.keyword ?? input.query) ?? "";
   const keywordSearch = buildMessageKeywordSearch(keyword);
-  const response = await searchIndex<MessageDocument>(SEARCH_INDEXES.messages, {
+  const request = () => searchPreferredIndex<MessageDocument>("messages", SEARCH_INDEXES.messages, {
     q: keywordSearch.q,
-    filter: [...buildMessageFilter(input), ...keywordSearch.extraFilters],
+    filters: [...buildMessageFilter(input), ...keywordSearch.extraFilters],
     page: input.page,
     hitsPerPage: input.limit,
     attributesToHighlight: ["content"],
@@ -450,6 +580,18 @@ async function searchMessagesViaIndex(input: MessageSearchInput) {
     showRankingScore: true,
     sort: ["timestampMs:desc"],
   });
+
+  let response;
+  try {
+    response = await request();
+  } catch (error) {
+    if (!isMissingContentCharacterSetFilter(error)) {
+      throw error;
+    }
+
+    await configureSearchIndices();
+    response = await request();
+  }
 
   const hits = response.hits.filter((hit) => filterMessageDocument(hit, input));
   return {

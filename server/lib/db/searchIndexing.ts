@@ -77,7 +77,7 @@ function parseNumericArray(value: unknown): number[] {
   }
   return value
     .map((entry) => Number(entry))
-    .filter((entry) => Number.isFinite(entry));
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
 }
 
 function mergeObjects<T extends Record<string, unknown>>(base: T, extra?: Record<string, unknown>) {
@@ -85,6 +85,34 @@ function mergeObjects<T extends Record<string, unknown>>(base: T, extra?: Record
     return base;
   }
   return { ...base, ...extra };
+}
+
+function hasStoredShadowIndexes(run: SearchIndexRunRecord | null | undefined) {
+  const shadowIndexes = run?.metadata?.shadowIndexes;
+  if (!shadowIndexes || typeof shadowIndexes !== "object") {
+    return false;
+  }
+
+  const candidate = shadowIndexes as Record<string, unknown>;
+  return typeof candidate.profiles === "string"
+    && candidate.profiles.length > 0
+    && typeof candidate.chats === "string"
+    && candidate.chats.length > 0
+    && typeof candidate.messages === "string"
+    && candidate.messages.length > 0;
+}
+
+async function getLatestFullReindexByStatuses(statuses: SearchIndexRunStatus[]) {
+  const rows = await sql<SearchIndexRunRecord[]>`
+    SELECT *
+    FROM search_index_runs
+    WHERE mode = 'full_reindex'
+      AND status IN ${sql(statuses)}
+    ORDER BY started_at DESC
+    LIMIT 25
+  `;
+
+  return rows.find((row) => hasStoredShadowIndexes(row)) ?? null;
 }
 
 export async function createSearchIndexRun(input: {
@@ -109,23 +137,66 @@ export async function createSearchIndexRun(input: {
   return row;
 }
 
-export async function updateSearchIndexRun(runId: string, input: UpdateRunInput) {
-  const [existing] = await sql<SearchIndexRunRecord[]>`
+export async function getSearchIndexRun(runId: string) {
+  const [row] = await sql<SearchIndexRunRecord[]>`
     SELECT *
     FROM search_index_runs
     WHERE id = ${runId}
     LIMIT 1
   `;
 
+  return row ?? null;
+}
+
+function normalizeShadowHint(value: string) {
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return null;
+  }
+
+  return cleaned
+    .replace(/__backing_v1$/i, "")
+    .replace(/^(profiles|chats|messages)__shadow_/i, "")
+    .toLowerCase();
+}
+
+export async function getSearchIndexRunByShadowHint(identifier: string) {
+  const normalized = normalizeShadowHint(identifier);
+  if (!normalized) {
+    return null;
+  }
+
+  const metadataPattern = `%__shadow_${normalized}`;
+  const runIdPattern = `${normalized}%`;
+  const [row] = await sql<SearchIndexRunRecord[]>`
+    SELECT *
+    FROM search_index_runs
+    WHERE mode = 'full_reindex'
+      AND (
+        REPLACE(LOWER(id::text), '-', '') LIKE ${runIdPattern}
+        OR LOWER(COALESCE(metadata->'shadowIndexes'->>'profiles', '')) LIKE ${metadataPattern}
+        OR LOWER(COALESCE(metadata->'shadowIndexes'->>'chats', '')) LIKE ${metadataPattern}
+        OR LOWER(COALESCE(metadata->'shadowIndexes'->>'messages', '')) LIKE ${metadataPattern}
+      )
+    ORDER BY started_at DESC
+    LIMIT 1
+  `;
+
+  return row ?? null;
+}
+
+export async function updateSearchIndexRun(runId: string, input: UpdateRunInput) {
+  const existing = await getSearchIndexRun(runId);
+
   if (!existing) {
     throw new Error(`Search index run not found: ${runId}`);
   }
 
   const nextTaskUids = input.taskUids
-    ? Array.from(new Set([...parseNumericArray(existing.task_uids), ...input.taskUids]))
+    ? Array.from(new Set([...parseNumericArray(existing.task_uids), ...parseNumericArray(input.taskUids)]))
     : parseNumericArray(existing.task_uids);
   const nextBatchUids = input.batchUids
-    ? Array.from(new Set([...parseNumericArray(existing.batch_uids), ...input.batchUids]))
+    ? Array.from(new Set([...parseNumericArray(existing.batch_uids), ...parseNumericArray(input.batchUids)]))
     : parseNumericArray(existing.batch_uids);
 
   const [row] = await sql<SearchIndexRunRecord[]>`
@@ -167,6 +238,25 @@ export async function markSearchIndexRunFailed(runId: string, error: unknown, in
     errorText: error instanceof Error ? error.message : String(error),
     finishedAt: new Date(),
   });
+}
+
+export async function getLatestRunningFullReindex() {
+  return getLatestFullReindexByStatuses(["running"]);
+}
+
+export async function getLatestResumableFullReindex() {
+  return getLatestFullReindexByStatuses(["running", "failed"]);
+}
+
+export async function getActiveSearchShadowIndex(scope: SearchIndexScope) {
+  const run = await getLatestRunningFullReindex();
+  if (!run || !Array.isArray(run.scopes) || !run.scopes.includes(scope)) {
+    return null;
+  }
+
+  const shadowIndexes = (run.metadata?.shadowIndexes ?? null) as Record<string, unknown> | null;
+  const shadowIndex = shadowIndexes?.[scope];
+  return typeof shadowIndex === "string" && shadowIndex.length > 0 ? shadowIndex : null;
 }
 
 export async function enqueueSearchIndexEvents(events: EnqueueSearchIndexEventInput[]) {

@@ -7,7 +7,7 @@ import * as trpcExpress from "@trpc/server/adapters/express";
 import { handleDemo } from "./routes/demo";
 import { testConnection, closeConnection } from "./lib/db";
 import { getCassandraClient } from "./lib/tg-queries/cassandra";
-import { healthCheckMeilisearch } from "./lib/tg-queries/searchIndex";
+import { getSearchBackend, healthCheckSearchBackend } from "./lib/tg-queries/searchIndex";
 import { startTrackingMonitor, stopTrackingMonitor } from "./lib/trackingMonitor";
 import { appRouter } from "./trpc/router";
 import { createContext } from "./trpc/context";
@@ -19,6 +19,7 @@ export function createServer() {
   const app = express();
   const isVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
   const isProd = process.env.NODE_ENV === "production";
+  const searchBackend = getSearchBackend();
 
   if (isProd && !isVercel) {
     app.set("trust proxy", 1);
@@ -99,26 +100,36 @@ export function createServer() {
       }
     })();
 
-    const meilisearchOk = await (async () => {
-      if (!process.env.MEILISEARCH_URL || !process.env.MEILISEARCH_API_KEY) {
+    const searchOk = await (async () => {
+      const hasOpenSearchConfig = Boolean(process.env.OPENSEARCH_URL);
+      const hasMeilisearchConfig = Boolean(process.env.MEILISEARCH_URL && process.env.MEILISEARCH_API_KEY);
+      if ((searchBackend === "opensearch" && !hasOpenSearchConfig)
+        || (searchBackend === "meilisearch" && !hasMeilisearchConfig)) {
         return false;
       }
 
       try {
-        const result = await healthCheckMeilisearch();
-        return result.status === "available";
+        const result = await healthCheckSearchBackend();
+        return result.healthy;
       } catch {
         return false;
       }
     })();
 
-    const healthy = postgresOk && cassandraOk && meilisearchOk;
+    const healthy = postgresOk && cassandraOk && searchOk;
+    const searchStatus = searchOk ? "ok" : "down";
     res.status(healthy ? 200 : 503).json({
       status: healthy ? "ok" : "degraded",
       services: {
         postgres: postgresOk ? "ok" : "down",
         cassandra: cassandraOk ? "ok" : "down",
-        meilisearch: meilisearchOk ? "ok" : "down",
+        search: searchStatus,
+        meilisearch: searchBackend === "meilisearch" ? searchStatus : "inactive",
+        opensearch: searchBackend === "opensearch" ? searchStatus : "inactive",
+      },
+      search: {
+        backend: searchBackend,
+        status: searchStatus,
       },
     });
   });
@@ -137,26 +148,36 @@ export function createServer() {
       }
     })();
 
-    const meilisearchOk = await (async () => {
-      if (!process.env.MEILISEARCH_URL || !process.env.MEILISEARCH_API_KEY) {
+    const searchOk = await (async () => {
+      const hasOpenSearchConfig = Boolean(process.env.OPENSEARCH_URL);
+      const hasMeilisearchConfig = Boolean(process.env.MEILISEARCH_URL && process.env.MEILISEARCH_API_KEY);
+      if ((searchBackend === "opensearch" && !hasOpenSearchConfig)
+        || (searchBackend === "meilisearch" && !hasMeilisearchConfig)) {
         return false;
       }
 
       try {
-        const result = await healthCheckMeilisearch();
-        return result.status === "available";
+        const result = await healthCheckSearchBackend();
+        return result.healthy;
       } catch {
         return false;
       }
     })();
 
-    const healthy = postgresOk && cassandraOk && meilisearchOk;
+    const healthy = postgresOk && cassandraOk && searchOk;
+    const searchStatus = searchOk ? "ok" : "down";
     res.status(healthy ? 200 : 503).json({
       status: healthy ? "ok" : "degraded",
       services: {
         postgres: postgresOk ? "ok" : "down",
         cassandra: cassandraOk ? "ok" : "down",
-        meilisearch: meilisearchOk ? "ok" : "down",
+        search: searchStatus,
+        meilisearch: searchBackend === "meilisearch" ? searchStatus : "inactive",
+        opensearch: searchBackend === "opensearch" ? searchStatus : "inactive",
+      },
+      search: {
+        backend: searchBackend,
+        status: searchStatus,
       },
     });
   });

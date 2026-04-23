@@ -9,6 +9,10 @@ export type EnvShape = {
   CASSANDRA_PASSWORD: string;
   POSTGRES_URL: string;
   REDIS_URL: string;
+  SEARCH_BACKEND: string;
+  OPENSEARCH_URL: string;
+  OPENSEARCH_USERNAME: string;
+  OPENSEARCH_PASSWORD: string;
   MEILISEARCH_URL: string;
   MEILISEARCH_API_KEY: string;
   TELEGRAM_API_ID: string;
@@ -36,6 +40,10 @@ export function readEnv(source: Record<string, string | undefined> = process.env
     CASSANDRA_PASSWORD: source.CASSANDRA_PASSWORD ?? "",
     POSTGRES_URL: source.POSTGRES_URL ?? "",
     REDIS_URL: source.REDIS_URL ?? "",
+    SEARCH_BACKEND: source.SEARCH_BACKEND ?? "opensearch",
+    OPENSEARCH_URL: source.OPENSEARCH_URL ?? "",
+    OPENSEARCH_USERNAME: source.OPENSEARCH_USERNAME ?? "",
+    OPENSEARCH_PASSWORD: source.OPENSEARCH_PASSWORD ?? "",
     MEILISEARCH_URL: source.MEILISEARCH_URL ?? "",
     MEILISEARCH_API_KEY: source.MEILISEARCH_API_KEY ?? "",
     TELEGRAM_API_ID: source.TELEGRAM_API_ID ?? "",

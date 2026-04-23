@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { consumeSearchIndexOutbox, isLegacySearchSyncEnabled } from "../lib/tg-queries/searchSync";
 import { legacySyncSearchDocuments } from "../lib/tg-queries/searchIndexer";
+import { getSearchBackend } from "../lib/tg-queries/searchIndex";
 
 function parseScopes() {
   const scopeArg = process.argv.find((arg) => arg.startsWith("--scopes="));
@@ -23,7 +24,7 @@ async function main() {
     ? await legacySyncSearchDocuments(scopes)
     : await consumeSearchIndexOutbox(scopes);
 
-  console.log("[search:sync] Synced documents:", result);
+  console.log(`[search:sync] Synced documents into ${getSearchBackend()}:`, result);
 }
 
 main().catch((error) => {

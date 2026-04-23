@@ -1,6 +1,7 @@
 -- TG OSINT Platform: Cassandra Schema
 -- Run with: cqlsh -u cassandra -p cassandra -f cassandra-schema.cql
--- Fuzzy/ranked search is handled by Meilisearch. Cassandra remains the source
+-- Fuzzy/ranked search is handled by the configured search backend
+-- (OpenSearch by default, Meilisearch as a fallback). Cassandra remains the source
 -- of truth for entities, messages, histories, and analytics tables.
 
 CREATE KEYSPACE IF NOT EXISTS tgosint

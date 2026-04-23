@@ -1,4 +1,6 @@
 process.env.POSTGRES_URL ??= "postgresql://test:test@localhost:5432/test";
+process.env.SEARCH_BACKEND ??= "opensearch";
+process.env.OPENSEARCH_URL ??= "http://localhost:9200";
 process.env.MEILISEARCH_URL ??= "http://localhost:7700";
 process.env.MEILISEARCH_API_KEY ??= "test-key";
 process.env.CASSANDRA_CONTACT_POINTS ??= "127.0.0.1";

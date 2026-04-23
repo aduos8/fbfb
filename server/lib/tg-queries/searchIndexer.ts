@@ -1,4 +1,7 @@
 import {
+  isTrackedSearchTaskId,
+  getOpenSearchSwapDetails,
+  getSearchBackend,
   type MeilisearchBatch,
   type MeilisearchTask,
   SEARCH_INDEXES,
@@ -15,8 +18,13 @@ import {
 } from "./searchIndex";
 import {
   createSearchIndexRun,
+  getSearchIndexRunByShadowHint,
+  getLatestResumableFullReindex,
+  getSearchIndexRun,
+  type SearchIndexRunRecord,
   markSearchIndexRunFailed,
   markSearchIndexRunSucceeded,
+  type SearchIndexScope,
   updateSearchIndexRun,
 } from "../db/searchIndexing";
 import { buildContentCharacterSet, containsLink } from "./searchHelpers";
@@ -24,6 +32,7 @@ import {
   listAllChats,
   listAllMessages,
   listAllUsers,
+  listUsersByIds,
   streamAllMessages,
   streamAllMessagesFromChatTable,
   streamAllMessagesFromChats,
@@ -39,15 +48,16 @@ import {
 
 const INDEX_TASK_TIMEOUT = 600_000;
 const DEFAULT_BATCH_SIZE = 5000;
-const DEFAULT_UPLOAD_CONCURRENCY = 8;
+const DEFAULT_UPLOAD_CONCURRENCY = 2;
 const DEFAULT_CASSANDRA_PAGE_SIZE = 10000;
 const DEFAULT_FLUSH_MULTIPLIER = 4;
-const DEFAULT_CHAT_SCAN_CONCURRENCY = 4;
-const DEFAULT_USER_SCAN_CONCURRENCY = 4;
+const DEFAULT_CHAT_SCAN_CONCURRENCY = 12;
+const DEFAULT_USER_SCAN_CONCURRENCY = 12;
 const DEFAULT_BUCKET_START_YEAR = 2013;
 const DEFAULT_BUCKET_START_MONTH = 1;
-const DEFAULT_MESSAGE_SCAN_MODE = "table_scan";
+const DEFAULT_MESSAGE_SCAN_MODE = "partition_scan";
 const DEFAULT_AUTO_PRUNE_SHADOW_INDEXES = true;
+const DEFAULT_EARLY_MESSAGE_SWAP = true;
 const VALID_MESSAGE_PHASES = ["messages_by_chat", "messages_by_user", "messages_by_id"] as const;
 const VALID_MESSAGE_SCAN_MODES = ["table_scan", "partition_scan"] as const;
 
@@ -65,6 +75,7 @@ type IndexerConfig = {
   bucketStartMonth: number;
   messageScanMode: MessageScanMode;
   autoPruneShadowIndexes: boolean;
+  earlyMessageSwap: boolean;
   reindexPhases: MessagePhase[];
   syncPhases: MessagePhase[];
 };
@@ -122,6 +133,21 @@ type UploadSummary = {
 
 type IndexWriteSummary = UploadSummary & {
   count: number;
+};
+
+type ReindexResult = {
+  profiles: number;
+  chats: number;
+  messages: number;
+  runId: string;
+  shadowIndexes: SearchIndexMap;
+};
+
+type ReindexExecutionOptions = {
+  runId: string;
+  shadowIndexes: SearchIndexMap;
+  scopes: SearchIndexScope[];
+  resume?: boolean;
 };
 
 function toIsoString(value: Date | string | null | undefined) {
@@ -290,6 +316,10 @@ function getIndexerConfig(): IndexerConfig {
       "SEARCH_INDEX_AUTO_PRUNE_SHADOW_INDEXES",
       DEFAULT_AUTO_PRUNE_SHADOW_INDEXES
     ),
+    earlyMessageSwap: readBooleanEnv(
+      "SEARCH_INDEX_EARLY_MESSAGE_SWAP",
+      DEFAULT_EARLY_MESSAGE_SWAP
+    ),
     reindexPhases: ensureRequiredMessagePhases(
       parseMessagePhases("SEARCH_INDEX_REINDEX_PHASES", ["messages_by_chat"]),
       ["messages_by_chat"]
@@ -318,7 +348,9 @@ function collectTaskSummary(tasks: MeilisearchTask[]): UploadSummary {
   return {
     taskUids: Array.from(
       new Set(
-        tasks.map((task) => task.taskUid).filter((taskUid) => Number.isFinite(taskUid))
+        tasks
+          .map((task) => task.taskUid)
+          .filter((taskUid): taskUid is number => isTrackedSearchTaskId(taskUid))
       )
     ),
     batchUids: Array.from(
@@ -327,7 +359,7 @@ function collectTaskSummary(tasks: MeilisearchTask[]): UploadSummary {
           .map((task) => task.batchUid ?? null)
           .filter(
             (batchUid): batchUid is number =>
-              typeof batchUid === "number" && Number.isFinite(batchUid)
+              isTrackedSearchTaskId(batchUid)
           )
       )
     ),
@@ -502,7 +534,7 @@ async function uploadDocumentsConcurrently<T extends Record<string, unknown>>(
   const chunks = chunkArray(documents, config.batchSize);
   console.log(
     `[indexer] uploading ${documents.length} docs to "${indexName}" in ${chunks.length} batches ` +
-      `(concurrency: ${config.uploadConcurrency})...`
+    `(concurrency: ${config.uploadConcurrency})...`
   );
 
   const submittedTasks: MeilisearchTask[] = [];
@@ -545,10 +577,13 @@ async function replaceIndexDocuments<T extends Record<string, unknown>>(
 
   return {
     count: documents.length,
-    taskUids: [deleteTask.taskUid, ...uploadSummary.taskUids],
+    taskUids: [
+      ...(isTrackedSearchTaskId(deleteTask.taskUid) ? [deleteTask.taskUid] : []),
+      ...uploadSummary.taskUids,
+    ],
     batchUids: Array.from(
       new Set([
-        ...(typeof deleteTask.batchUid === "number" ? [deleteTask.batchUid] : []),
+        ...(isTrackedSearchTaskId(deleteTask.batchUid) ? [deleteTask.batchUid] : []),
         ...uploadSummary.batchUids,
       ])
     ),
@@ -609,7 +644,6 @@ async function streamIndexMessages(
     await waitForTask(deleteTask.taskUid, INDEX_TASK_TIMEOUT);
   }
 
-  const seen = new Set<string>();
   const flushThreshold = config.batchSize * config.flushMultiplier;
 
   async function flush() {
@@ -632,16 +666,17 @@ async function streamIndexMessages(
     });
 
     totalIndexed += toUpload.length;
-    console.log(`[indexer] messages: ${totalIndexed} indexed (${seen.size} unique seen)...`);
+    console.log(`[indexer] messages: ${totalIndexed} indexed...`);
   }
 
-  function deduplicateAndBuild(messagePage: MessageRecord[]) {
+  async function deduplicateAndBuild(messagePage: MessageRecord[]) {
+    const seenInPage = new Set<string>();
     const newMessages = messagePage.filter((message) => {
       const key = `${message.chat_id}:${message.message_id}`;
-      if (seen.has(key)) {
+      if (seenInPage.has(key)) {
         return false;
       }
-      seen.add(key);
+      seenInPage.add(key);
       return true;
     });
 
@@ -649,22 +684,32 @@ async function streamIndexMessages(
       return [];
     }
 
+    const missingUserIds = Array.from(
+      new Set(
+        newMessages
+          .map((message) => message.user_id ?? null)
+          .filter((userId): userId is string => Boolean(userId) && !userMap.has(userId))
+      )
+    );
+    if (missingUserIds.length > 0) {
+      const users = await listUsersByIds(missingUserIds);
+      for (const user of users) {
+        userMap.set(user.user_id, user);
+      }
+    }
+
     return buildMessageDocumentsFromMaps(newMessages, userMap, chatMap);
   }
 
-  for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex += 1) {
-    const phase = phases[phaseIndex];
-    const phaseLabel = `phase ${phaseIndex + 1}/${phases.length}`;
-    const phaseStartCount = totalIndexed;
-
+  async function scanPhase(phase: MessagePhase, scanMode: MessageScanMode, phaseLabel: string) {
     if (phase === "messages_by_chat") {
-      if (config.messageScanMode === "table_scan") {
+      if (scanMode === "table_scan") {
         console.log(`[indexer] ${phaseLabel}: streaming messages_by_chat (full table scan)...`);
         for await (const messagePage of streamAllMessagesFromChatTable(config.cassandraPageSize)) {
           if (messagePage.length === 0) {
             continue;
           }
-          const documents = deduplicateAndBuild(messagePage);
+          const documents = await deduplicateAndBuild(messagePage);
           if (documents.length > 0) {
             pendingDocs.push(...documents);
           }
@@ -684,7 +729,7 @@ async function streamIndexMessages(
           if (messagePage.length === 0) {
             continue;
           }
-          const documents = deduplicateAndBuild(messagePage);
+          const documents = await deduplicateAndBuild(messagePage);
           if (documents.length > 0) {
             pendingDocs.push(...documents);
           }
@@ -693,14 +738,17 @@ async function streamIndexMessages(
           }
         }
       }
-    } else if (phase === "messages_by_user") {
-      if (config.messageScanMode === "table_scan") {
+      return;
+    }
+
+    if (phase === "messages_by_user") {
+      if (scanMode === "table_scan") {
         console.log(`[indexer] ${phaseLabel}: streaming messages_by_user (full table scan)...`);
         for await (const messagePage of streamAllMessagesFromUserTable(config.cassandraPageSize)) {
           if (messagePage.length === 0) {
             continue;
           }
-          const documents = deduplicateAndBuild(messagePage);
+          const documents = await deduplicateAndBuild(messagePage);
           if (documents.length > 0) {
             pendingDocs.push(...documents);
           }
@@ -720,7 +768,7 @@ async function streamIndexMessages(
           if (messagePage.length === 0) {
             continue;
           }
-          const documents = deduplicateAndBuild(messagePage);
+          const documents = await deduplicateAndBuild(messagePage);
           if (documents.length > 0) {
             pendingDocs.push(...documents);
           }
@@ -729,32 +777,52 @@ async function streamIndexMessages(
           }
         }
       }
-    } else {
-      console.log(`[indexer] ${phaseLabel}: streaming messages_by_id...`);
-      for await (const messagePage of streamAllMessages(config.cassandraPageSize)) {
-        if (messagePage.length === 0) {
-          continue;
-        }
-        const documents = deduplicateAndBuild(messagePage);
-        if (documents.length > 0) {
-          pendingDocs.push(...documents);
-        }
-        if (pendingDocs.length >= flushThreshold) {
-          await flush();
-        }
+      return;
+    }
+
+    console.log(`[indexer] ${phaseLabel}: streaming messages_by_id...`);
+    for await (const messagePage of streamAllMessages(config.cassandraPageSize)) {
+      if (messagePage.length === 0) {
+        continue;
+      }
+      const documents = await deduplicateAndBuild(messagePage);
+      if (documents.length > 0) {
+        pendingDocs.push(...documents);
+      }
+      if (pendingDocs.length >= flushThreshold) {
+        await flush();
       }
     }
+  }
+
+  for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex += 1) {
+    const phase = phases[phaseIndex];
+    const phaseLabel = `phase ${phaseIndex + 1}/${phases.length}`;
+    const phaseStartCount = totalIndexed;
+    await scanPhase(phase, config.messageScanMode, phaseLabel);
 
     await flush();
     if (
       (phase === "messages_by_chat" || phase === "messages_by_user")
       && totalIndexed === phaseStartCount
     ) {
-      const scanHint =
-        config.messageScanMode === "partition_scan"
-          ? `This usually means the configured bucket scan range does not match the Cassandra data. Current bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}.`
-          : "This usually means the source table is empty or Cassandra returned no rows for the full table scan.";
-      console.warn(`[indexer] ${phase} returned 0 messages. ${scanHint}`);
+      if (config.messageScanMode === "partition_scan") {
+        console.warn(
+          `[indexer] ${phase} returned 0 messages via partition scan. ` +
+          `Falling back to full table scan because the configured bucket range may not match the stored partition keys. ` +
+          `Current bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}.`
+        );
+        await scanPhase(phase, "table_scan", `${phaseLabel} fallback`);
+        await flush();
+      }
+
+      if (totalIndexed === phaseStartCount) {
+        const scanHint =
+          config.messageScanMode === "partition_scan"
+            ? `This usually means the configured bucket scan range does not match the Cassandra data. Current bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}.`
+            : "This usually means the source table is empty or Cassandra returned no rows for the full table scan.";
+        console.warn(`[indexer] ${phase} returned 0 messages. ${scanHint}`);
+      }
     }
     console.log(
       `[indexer] ${phaseLabel} complete: +${totalIndexed - phaseStartCount} new from ${phase}`
@@ -762,15 +830,23 @@ async function streamIndexMessages(
   }
 
   console.log(
-    `[indexer] messages: ALL PHASES DONE — ${totalIndexed} total documents indexed (${seen.size} unique messages)`
+    `[indexer] messages: ALL PHASES DONE — ${totalIndexed} total write operations submitted`
   );
   const taskSummary = collectTaskSummary(submittedTasks);
+  const finalCount = mode === "replace"
+    ? (await getIndexStats(targetIndexName)).numberOfDocuments
+    : totalIndexed;
   return {
-    count: totalIndexed,
-    taskUids: deleteTask ? [deleteTask.taskUid, ...taskSummary.taskUids] : taskSummary.taskUids,
+    count: finalCount,
+    taskUids: deleteTask
+      ? [
+          ...(isTrackedSearchTaskId(deleteTask.taskUid) ? [deleteTask.taskUid] : []),
+          ...taskSummary.taskUids,
+        ]
+      : taskSummary.taskUids,
     batchUids: Array.from(
       new Set([
-        ...(deleteTask && typeof deleteTask.batchUid === "number" ? [deleteTask.batchUid] : []),
+        ...(deleteTask && isTrackedSearchTaskId(deleteTask.batchUid) ? [deleteTask.batchUid] : []),
         ...taskSummary.batchUids,
       ])
     ),
@@ -805,35 +881,63 @@ export async function loadSearchSourceData(
   return { users, chats, messages, historyMap };
 }
 
-export async function reindexSearchDocuments() {
-  console.log("[indexer] === FULL REINDEX START ===");
+function normalizeReindexScopes(scopes?: SearchIndexScope[]) {
+  const normalized = scopes && scopes.length > 0
+    ? Array.from(new Set(scopes))
+    : (["profiles", "chats", "messages"] as SearchIndexScope[]);
+  return normalized;
+}
+
+function collectOpenSearchIndicesToPrune(tasks: Array<MeilisearchTask | null | undefined>) {
+  return Array.from(new Set(
+    tasks.flatMap((task) =>
+      getOpenSearchSwapDetails(task).flatMap((detail) => detail.previousLiveTargets)
+    )
+  ));
+}
+
+async function executeFullReindex(options: ReindexExecutionOptions): Promise<ReindexResult> {
+  const startLabel = options.resume ? "RESUME REINDEX" : "FULL REINDEX";
+  console.log(`[indexer] === ${startLabel} START ===`);
   const startTime = Date.now();
   const config = getIndexerConfig();
-  const run = await createSearchIndexRun({
-    mode: "full_reindex",
-    scopes: ["profiles", "chats", "messages"],
-  });
-  const shadowIndexes = createShadowIndexes(run.id);
+  const normalizedScopes = normalizeReindexScopes(options.scopes);
+  const rebuildProfiles = normalizedScopes.includes("profiles");
+  const rebuildChats = normalizedScopes.includes("chats");
+  const rebuildMessages = normalizedScopes.includes("messages");
+  const runId = options.runId;
+  const shadowIndexes = options.shadowIndexes;
   console.log(
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
-      `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
-      `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
-      `scanMode=${config.messageScanMode}, ` +
-      `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
-      `messagePhases=${config.reindexPhases.join(" -> ")}`
+    `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
+    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
+    `scanMode=${config.messageScanMode}, ` +
+    `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
+    `earlyMessageSwap=${config.earlyMessageSwap}, ` +
+    `resume=${options.resume ? "true" : "false"}, ` +
+    `scopes=${normalizedScopes.join(",")}, ` +
+    `messagePhases=${config.reindexPhases.join(" -> ")}`
   );
 
   try {
-    await updateSearchIndexRun(run.id, {
+    await updateSearchIndexRun(runId, {
+      status: "running",
+      errorText: null,
+      finishedAt: null,
       metadata: {
         liveIndexes: SEARCH_INDEXES,
         shadowIndexes,
+        backend: getSearchBackend(),
+        resumedAt: options.resume ? new Date().toISOString() : undefined,
       },
     });
     await configureSearchIndices(shadowIndexes);
 
-    console.log("[indexer] loading users and chats from Cassandra (parallel)...");
-    const [users, chats] = await Promise.all([listAllUsers(), listAllChats()]);
+    console.log("[indexer] loading Cassandra source data...");
+    const [users, chats] = await Promise.all([
+      rebuildProfiles ? listAllUsers() : Promise.resolve([] as UserRecord[]),
+      rebuildChats || rebuildMessages ? listAllChats() : Promise.resolve([] as ChatRecord[]),
+    ]);
     console.log(`[indexer] loaded ${users.length} users, ${chats.length} chats`);
 
     const userIds = users.map((user) => user.user_id);
@@ -843,59 +947,106 @@ export async function reindexSearchDocuments() {
         : new Map<string, HistoryRecordLight[]>();
     console.log(`[indexer] loaded history for ${historyMap.size} users`);
 
-    await updateSearchIndexRun(run.id, {
+    await updateSearchIndexRun(runId, {
       sourceCounts: {
-        profiles: users.length,
-        chats: chats.length,
+        profiles: rebuildProfiles ? users.length : 0,
+        chats: rebuildChats ? chats.length : 0,
       },
     });
 
     const userMap = new Map(users.map((user) => [user.user_id, user]));
     const chatMap = new Map(chats.map((chat) => [chat.chat_id, chat]));
 
-    console.log("[indexer] indexing profiles, chats, and messages into shadow indexes...");
-    const [profileSummary, chatSummary, messageSummary] = await Promise.all([
-      replaceIndexDocuments(
+    console.log(`[indexer] indexing scopes into shadow indexes: ${normalizedScopes.join(", ")}...`);
+    const profilePromise = rebuildProfiles
+      ? replaceIndexDocuments(
         shadowIndexes.profiles,
         buildProfileDocuments(users, historyMap),
         config,
-        `run:${run.id}:profiles`
-      ),
-      replaceIndexDocuments(
+        `${options.resume ? "resume" : "run"}:${runId}:profiles`
+      )
+      : Promise.resolve({ count: 0, taskUids: [], batchUids: [] });
+    const chatPromise = rebuildChats
+      ? replaceIndexDocuments(
         shadowIndexes.chats,
         buildChatDocuments(chats),
         config,
-        `run:${run.id}:chats`
-      ),
-      streamIndexMessages(userMap, chatMap, "replace", config, {
+        `${options.resume ? "resume" : "run"}:${runId}:chats`
+      )
+      : Promise.resolve({ count: 0, taskUids: [], batchUids: [] });
+    const messagePromise = rebuildMessages
+      ? streamIndexMessages(userMap, chatMap, options.resume ? "sync" : "replace", config, {
         indexName: shadowIndexes.messages,
         phases: config.reindexPhases,
-        customMetadataPrefix: `run:${run.id}:messages`,
-      }),
-    ]);
+        customMetadataPrefix: `${options.resume ? "resume" : "run"}:${runId}:messages`,
+      })
+      : Promise.resolve({ count: 0, taskUids: [], batchUids: [] });
 
-    const [profileStats, chatStats, messageStats] = await Promise.all([
-      getIndexStats(shadowIndexes.profiles),
-      getIndexStats(shadowIndexes.chats),
-      getIndexStats(shadowIndexes.messages),
-    ]);
+    let messageSummary = await messagePromise;
+    let messageStats = rebuildMessages
+      ? await getIndexStats(shadowIndexes.messages)
+      : { numberOfDocuments: 0 };
 
-    if ((profileStats.numberOfDocuments ?? 0) !== users.length) {
-      throw new Error(
-        `Profile shadow index validation failed: expected ${users.length}, received ${profileStats.numberOfDocuments ?? 0}`
-      );
-    }
-    if ((chatStats.numberOfDocuments ?? 0) !== chats.length) {
-      throw new Error(
-        `Chat shadow index validation failed: expected ${chats.length}, received ${chatStats.numberOfDocuments ?? 0}`
-      );
-    }
-    if ((messageStats.numberOfDocuments ?? 0) !== messageSummary.count) {
+    if (rebuildMessages && (messageStats.numberOfDocuments ?? 0) !== messageSummary.count) {
       throw new Error(
         `Message shadow index validation failed: expected ${messageSummary.count}, received ${messageStats.numberOfDocuments ?? 0}`
       );
     }
 
+    let earlyMessageSwapTask: MeilisearchTask | null = null;
+    let earlyMessageSwapCompletedTask: MeilisearchTask | null = null;
+    const shouldEarlySwapMessage =
+      rebuildMessages
+      && config.earlyMessageSwap
+      && (rebuildProfiles || rebuildChats);
+
+    if (shouldEarlySwapMessage) {
+      console.log('[indexer] message shadow index validated; swapping "messages" live early...');
+      earlyMessageSwapTask = await swapIndexes([
+        { indexes: [SEARCH_INDEXES.messages, shadowIndexes.messages] },
+      ]);
+      earlyMessageSwapCompletedTask = await waitForTask(
+        earlyMessageSwapTask.taskUid,
+        INDEX_TASK_TIMEOUT
+      );
+      await updateSearchIndexRun(runId, {
+        indexedCounts: {
+          messages: messageSummary.count,
+        },
+        taskUids: [
+          ...(isTrackedSearchTaskId(earlyMessageSwapTask.taskUid) ? [earlyMessageSwapTask.taskUid] : []),
+          ...messageSummary.taskUids,
+        ],
+        batchUids: [
+          ...(isTrackedSearchTaskId(earlyMessageSwapCompletedTask.batchUid)
+            ? [earlyMessageSwapCompletedTask.batchUid]
+            : []),
+          ...messageSummary.batchUids,
+        ],
+        progressSummary: {
+          messageSwapEarly: true,
+          messagesVisible: true,
+        },
+      });
+    }
+
+    const [profileSummary, chatSummary, profileStats, chatStats] = await Promise.all([
+      profilePromise,
+      chatPromise,
+      rebuildProfiles ? getIndexStats(shadowIndexes.profiles) : Promise.resolve({ numberOfDocuments: 0 }),
+      rebuildChats ? getIndexStats(shadowIndexes.chats) : Promise.resolve({ numberOfDocuments: 0 }),
+    ]);
+
+    if (rebuildProfiles && (profileStats.numberOfDocuments ?? 0) !== users.length) {
+      throw new Error(
+        `Profile shadow index validation failed: expected ${users.length}, received ${profileStats.numberOfDocuments ?? 0}`
+      );
+    }
+    if (rebuildChats && (chatStats.numberOfDocuments ?? 0) !== chats.length) {
+      throw new Error(
+        `Chat shadow index validation failed: expected ${chats.length}, received ${chatStats.numberOfDocuments ?? 0}`
+      );
+    }
     const allTaskUids = [
       ...profileSummary.taskUids,
       ...chatSummary.taskUids,
@@ -908,7 +1059,7 @@ export async function reindexSearchDocuments() {
     ];
     const progressSummary = await buildBatchProgressSummary(allBatchUids);
 
-    await updateSearchIndexRun(run.id, {
+    await updateSearchIndexRun(runId, {
       indexedCounts: {
         profiles: profileSummary.count,
         chats: chatSummary.count,
@@ -919,61 +1070,198 @@ export async function reindexSearchDocuments() {
       progressSummary: {
         ...progressSummary,
         validation: {
-          profiles: profileStats.numberOfDocuments ?? 0,
-          chats: chatStats.numberOfDocuments ?? 0,
-          messages: messageStats.numberOfDocuments ?? 0,
+          profiles: rebuildProfiles ? profileStats.numberOfDocuments ?? 0 : null,
+          chats: rebuildChats ? chatStats.numberOfDocuments ?? 0 : null,
+          messages: rebuildMessages ? messageStats.numberOfDocuments ?? 0 : null,
         },
       },
     });
 
-    const swapTask = await swapIndexes([
-      { indexes: [SEARCH_INDEXES.profiles, shadowIndexes.profiles] },
-      { indexes: [SEARCH_INDEXES.chats, shadowIndexes.chats] },
-      { indexes: [SEARCH_INDEXES.messages, shadowIndexes.messages] },
-    ]);
-    const completedSwapTask = await waitForTask(swapTask.taskUid, INDEX_TASK_TIMEOUT);
+    const swaps: Array<{ indexes: [string, string] }> = [];
+    if (rebuildProfiles) swaps.push({ indexes: [SEARCH_INDEXES.profiles, shadowIndexes.profiles] });
+    if (rebuildChats) swaps.push({ indexes: [SEARCH_INDEXES.chats, shadowIndexes.chats] });
+    if (rebuildMessages && !shouldEarlySwapMessage) {
+      swaps.push({ indexes: [SEARCH_INDEXES.messages, shadowIndexes.messages] });
+    }
+
+    let swapTask: MeilisearchTask | null = null;
+    let completedSwapTask: MeilisearchTask | null = null;
+    if (swaps.length > 0) {
+      swapTask = await swapIndexes(swaps);
+      completedSwapTask = await waitForTask(swapTask.taskUid, INDEX_TASK_TIMEOUT);
+    }
 
     if (config.autoPruneShadowIndexes) {
-      await Promise.all([
-        deleteIndex(shadowIndexes.profiles),
-        deleteIndex(shadowIndexes.chats),
-        deleteIndex(shadowIndexes.messages),
-      ]);
+      if (getSearchBackend() === "opensearch") {
+        const indicesToPrune = collectOpenSearchIndicesToPrune([
+          earlyMessageSwapTask,
+          swapTask,
+        ]);
+        await Promise.all(indicesToPrune.map((indexName) => deleteIndex(indexName)));
+      } else {
+        await Promise.all(
+          normalizedScopes.map((scope) => deleteIndex(shadowIndexes[scope]))
+        );
+      }
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[indexer] === FULL REINDEX COMPLETE in ${elapsed}s ===`);
+    console.log(`[indexer] === ${startLabel} COMPLETE in ${elapsed}s ===`);
 
-    await markSearchIndexRunSucceeded(run.id, {
-      taskUids: [swapTask.taskUid],
-      batchUids:
-        typeof completedSwapTask.batchUid === "number" ? [completedSwapTask.batchUid] : [],
+    await markSearchIndexRunSucceeded(runId, {
+      taskUids: [
+        ...(swapTask && isTrackedSearchTaskId(swapTask.taskUid) ? [swapTask.taskUid] : []),
+        ...(earlyMessageSwapTask && isTrackedSearchTaskId(earlyMessageSwapTask.taskUid)
+          ? [earlyMessageSwapTask.taskUid]
+          : []),
+      ],
+      batchUids: [
+        ...(completedSwapTask && isTrackedSearchTaskId(completedSwapTask.batchUid)
+          ? [completedSwapTask.batchUid]
+          : []),
+        ...(earlyMessageSwapCompletedTask && isTrackedSearchTaskId(earlyMessageSwapCompletedTask.batchUid)
+          ? [earlyMessageSwapCompletedTask.batchUid]
+          : []),
+      ],
       progressSummary: {
-        swapped: true,
+        swapped: Boolean(swapTask || earlyMessageSwapTask),
+        messageSwapEarly: shouldEarlySwapMessage,
         elapsedSeconds: Number(elapsed),
       },
       metadata: {
         shadowIndexes,
         liveIndexes: SEARCH_INDEXES,
         autoPrunedShadowIndexes: config.autoPruneShadowIndexes,
+        scopes: normalizedScopes,
+        backend: getSearchBackend(),
+        resumed: options.resume ?? false,
       },
     });
 
     return {
-      profiles: users.length,
-      chats: chats.length,
+      profiles: rebuildProfiles ? users.length : 0,
+      chats: rebuildChats ? chats.length : 0,
       messages: messageSummary.count,
-      runId: run.id,
+      runId,
       shadowIndexes,
     };
   } catch (error) {
-    await markSearchIndexRunFailed(run.id, error, {
+    await markSearchIndexRunFailed(runId, error, {
       metadata: {
         shadowIndexes,
+        backend: getSearchBackend(),
+        resumed: options.resume ?? false,
       },
     });
     throw error;
   }
+}
+
+export async function reindexSearchDocuments(scopes?: SearchIndexScope[]): Promise<ReindexResult> {
+  if (!scopes || scopes.length === 0) {
+    const resumableRun = await getLatestResumableFullReindex();
+    if (resumableRun) {
+      console.log(
+        `[indexer] reusing resumable full reindex ${resumableRun.id} instead of creating a new shadow run`
+      );
+      return resumeSearchReindex(resumableRun.id);
+    }
+  }
+
+  const normalizedScopes = normalizeReindexScopes(scopes);
+  const run = await createSearchIndexRun({
+    mode: "full_reindex",
+    scopes: normalizedScopes,
+  });
+  const shadowIndexes = createShadowIndexes(run.id);
+
+  return executeFullReindex({
+    runId: run.id,
+    shadowIndexes,
+    scopes: normalizedScopes,
+    resume: false,
+  });
+}
+
+function parseShadowIndexes(value: unknown): SearchIndexMap | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.profiles === "string"
+    && typeof candidate.chats === "string"
+    && typeof candidate.messages === "string"
+    ? {
+        profiles: candidate.profiles,
+        chats: candidate.chats,
+        messages: candidate.messages,
+      }
+    : null;
+}
+
+function deriveResumeScopes(run: SearchIndexRunRecord) {
+  const normalizedScopes = normalizeReindexScopes(run.scopes);
+  const progressSummary = (run.progress_summary ?? {}) as Record<string, unknown>;
+  const messagesAlreadyVisible =
+    progressSummary.messagesVisible === true || progressSummary.messageSwapEarly === true;
+
+  if (messagesAlreadyVisible && normalizedScopes.includes("messages")) {
+    const nonMessageScopes = normalizedScopes.filter((scope) => scope !== "messages");
+    if (nonMessageScopes.length > 0) {
+      console.log(
+        `[indexer] resume run ${run.id}: messages are already live, continuing with ${nonMessageScopes.join(", ")} only`
+      );
+      return nonMessageScopes;
+    }
+  }
+
+  return normalizedScopes;
+}
+
+function isCanonicalUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+export async function resumeSearchReindex(runId?: string): Promise<ReindexResult> {
+  const run = runId
+    ? (
+      isCanonicalUuid(runId)
+        ? (await getSearchIndexRun(runId)) ?? await getSearchIndexRunByShadowHint(runId)
+        : await getSearchIndexRunByShadowHint(runId)
+    )
+    : await getLatestResumableFullReindex();
+
+  if (!run) {
+    throw new Error(
+      runId
+        ? `Search index run not found for resume: ${runId}`
+        : "No resumable full reindex run found."
+    );
+  }
+
+  if (run.mode !== "full_reindex") {
+    throw new Error(`Search index run ${run.id} is not a full reindex run.`);
+  }
+
+  const shadowIndexes = parseShadowIndexes(run.metadata?.shadowIndexes) ?? createShadowIndexes(run.id);
+  if (!parseShadowIndexes(run.metadata?.shadowIndexes)) {
+    console.warn(
+      `[indexer] resume run ${run.id}: shadow indexes missing from metadata, reconstructing from run id as ` +
+      `${shadowIndexes.profiles}, ${shadowIndexes.chats}, ${shadowIndexes.messages}`
+    );
+  }
+  console.log(
+    `[indexer] resume run ${run.id}: resolved shadow indexes ${JSON.stringify(shadowIndexes)}`
+  );
+
+  const normalizedScopes = deriveResumeScopes(run);
+  return executeFullReindex({
+    runId: run.id,
+    shadowIndexes,
+    scopes: normalizedScopes,
+    resume: true,
+  });
 }
 
 export async function legacySyncSearchDocuments(
@@ -987,11 +1275,11 @@ export async function legacySyncSearchDocuments(
   const config = getIndexerConfig();
   console.log(
     `[indexer] config: batch=${config.batchSize}, uploadConcurrency=${config.uploadConcurrency}, ` +
-      `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
-      `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
-      `scanMode=${config.messageScanMode}, ` +
-      `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
-      `messagePhases=${config.syncPhases.join(" -> ")}`
+    `pageSize=${config.cassandraPageSize}, flushMultiplier=${config.flushMultiplier}, ` +
+    `chatScanConcurrency=${config.chatScanConcurrency}, userScanConcurrency=${config.userScanConcurrency}, ` +
+    `scanMode=${config.messageScanMode}, ` +
+    `bucketStart=${config.bucketStartYear}-${String(config.bucketStartMonth).padStart(2, "0")}, ` +
+    `messagePhases=${config.syncPhases.join(" -> ")}`
   );
 
   await configureSearchIndices();

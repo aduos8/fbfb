@@ -13,6 +13,7 @@
     "db:seed": "bun run server/seed.ts",
     "cassandra:init": "bun run server/scripts/cassandra-init.ts",
     "search:configure": "bun run server/scripts/search-configure.ts",
+    "search:bootstrap": "bun run db:migrate && bun run search:configure && bun run search:reindex",
     "search:reindex": "bun run server/scripts/search-reindex.ts",
     "search:sync": "bun run server/scripts/search-sync.ts",
     "test": "bunx vitest --run --config vitest.config.ts",
