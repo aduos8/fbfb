@@ -6,9 +6,12 @@ const searchIndexMocks = vi.hoisted(() => ({
   deleteIndex: vi.fn(),
   getBatch: vi.fn(),
   getIndexStats: vi.fn(),
+  getSearchBackend: vi.fn(() => "meilisearch"),
   getOpenSearchSwapDetails: vi.fn(() => []),
+  refreshIndex: vi.fn(),
   replaceDocuments: vi.fn(),
   swapIndexes: vi.fn(),
+  updateIndexSettings: vi.fn(),
   updateDocuments: vi.fn(),
   waitForTask: vi.fn(),
 }));
@@ -54,7 +57,7 @@ vi.mock("./searchIndex", () => ({
     chats: "chats",
     messages: "messages",
   },
-  getSearchBackend: () => "meilisearch",
+  getSearchBackend: searchIndexMocks.getSearchBackend,
   getOpenSearchSwapDetails: searchIndexMocks.getOpenSearchSwapDetails,
   isTrackedSearchTaskId: (value: number | null | undefined) =>
     typeof value === "number" && Number.isFinite(value) && value > 0,
@@ -63,8 +66,10 @@ vi.mock("./searchIndex", () => ({
   deleteIndex: searchIndexMocks.deleteIndex,
   getBatch: searchIndexMocks.getBatch,
   getIndexStats: searchIndexMocks.getIndexStats,
+  refreshIndex: searchIndexMocks.refreshIndex,
   replaceDocuments: searchIndexMocks.replaceDocuments,
   swapIndexes: searchIndexMocks.swapIndexes,
+  updateIndexSettings: searchIndexMocks.updateIndexSettings,
   updateDocuments: searchIndexMocks.updateDocuments,
   waitForTask: searchIndexMocks.waitForTask,
 }));
@@ -132,11 +137,20 @@ beforeEach(() => {
   delete process.env.SEARCH_INDEX_REINDEX_PHASES;
   delete process.env.SEARCH_INDEX_BATCH_SIZE;
   delete process.env.SEARCH_INDEX_UPLOAD_CONCURRENCY;
+  delete process.env.SEARCH_INDEX_OPENSEARCH_BULK_TARGET_BYTES;
   delete process.env.SEARCH_INDEX_CASSANDRA_PAGE_SIZE;
   delete process.env.SEARCH_INDEX_FLUSH_MULTIPLIER;
+  delete process.env.SEARCH_INDEX_MAX_INFLIGHT_FLUSHES;
   delete process.env.SEARCH_INDEX_CHAT_SCAN_CONCURRENCY;
   delete process.env.SEARCH_INDEX_USER_SCAN_CONCURRENCY;
+  delete process.env.SEARCH_INDEX_PARTITION_BUFFER_PAGES;
+  delete process.env.SEARCH_INDEX_MAX_DEDUPE_KEYS;
+  delete process.env.SEARCH_INDEX_OPENSEARCH_REINDEX_REFRESH_INTERVAL;
+  delete process.env.SEARCH_INDEX_OPENSEARCH_SYNC_REFRESH_INTERVAL;
+  delete process.env.SEARCH_INDEX_OPENSEARCH_NORMAL_REFRESH_INTERVAL;
   delete process.env.SEARCH_INDEX_MESSAGE_SCAN_MODE;
+  delete process.env.SEARCH_INDEX_REINDEX_MESSAGE_SCAN_MODE;
+  delete process.env.SEARCH_INDEX_SYNC_MESSAGE_SCAN_MODE;
   delete process.env.SEARCH_INDEX_BUCKET_START_YEAR;
   delete process.env.SEARCH_INDEX_BUCKET_START_MONTH;
   delete process.env.SEARCH_INDEX_AUTO_PRUNE_SHADOW_INDEXES;
@@ -145,13 +159,16 @@ beforeEach(() => {
   searchIndexMocks.deleteAllDocuments.mockResolvedValue({ taskUid: 1, batchUid: 1 });
   searchIndexMocks.deleteIndex.mockResolvedValue({ taskUid: 6, batchUid: 6 });
   searchIndexMocks.getBatch.mockResolvedValue({ uid: 1, progressTrace: {} });
+  searchIndexMocks.getSearchBackend.mockReturnValue("meilisearch");
   searchIndexMocks.getIndexStats.mockImplementation(async (uid: string) => {
     if (uid.includes("profiles")) return { numberOfDocuments: 1 };
     if (uid.includes("chats")) return { numberOfDocuments: 1 };
     return { numberOfDocuments: 1 };
   });
+  searchIndexMocks.refreshIndex.mockResolvedValue({ taskUid: -1, batchUid: -1 });
   searchIndexMocks.replaceDocuments.mockResolvedValue({ taskUid: 2, batchUid: 2 });
   searchIndexMocks.swapIndexes.mockResolvedValue({ taskUid: 4, batchUid: 4 });
+  searchIndexMocks.updateIndexSettings.mockResolvedValue({ taskUid: -1, batchUid: -1 });
   searchIndexMocks.updateDocuments.mockResolvedValue({ taskUid: 3, batchUid: 3 });
   searchIndexMocks.waitForTask.mockImplementation(async (taskUid: number) => ({
     taskUid,
@@ -235,11 +252,23 @@ describe("searchIndexer behavior", () => {
     expect(queryMocks.streamAllMessages).toHaveBeenCalledTimes(1);
     expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledWith(
       ["c1"],
-      expect.objectContaining({ fetchSize: 10000, concurrency: 12, bucketStartYear: 2013, bucketStartMonth: 1 })
+      expect.objectContaining({
+        fetchSize: 20000,
+        concurrency: 32,
+        maxBufferedPages: 96,
+        bucketStartYear: 2013,
+        bucketStartMonth: 1,
+      })
     );
     expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledWith(
       ["u1"],
-      expect.objectContaining({ fetchSize: 10000, concurrency: 12, bucketStartYear: 2013, bucketStartMonth: 1 })
+      expect.objectContaining({
+        fetchSize: 20000,
+        concurrency: 32,
+        maxBufferedPages: 96,
+        bucketStartYear: 2013,
+        bucketStartMonth: 1,
+      })
     );
     expect(searchIndexMocks.updateDocuments).toHaveBeenCalled();
     expect(result.messages).toBe(3);
@@ -261,8 +290,8 @@ describe("searchIndexer behavior", () => {
   it("rebuilds shadow indexes from chat-backed message scans and swaps atomically", async () => {
     const result = await reindexSearchDocuments();
 
-    expect(queryMocks.streamAllMessagesFromChatTable).not.toHaveBeenCalled();
-    expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledTimes(1);
+    expect(queryMocks.streamAllMessagesFromChatTable).toHaveBeenCalledTimes(1);
+    expect(queryMocks.streamAllMessagesFromChats).not.toHaveBeenCalled();
     expect(queryMocks.streamAllMessagesFromUserTable).not.toHaveBeenCalled();
     expect(queryMocks.streamAllMessages).not.toHaveBeenCalled();
     expect(searchIndexMocks.configureSearchIndices).toHaveBeenCalledWith({
@@ -281,6 +310,7 @@ describe("searchIndexer behavior", () => {
   });
 
   it("falls back to full table scan when partition scanning finds no chat messages", async () => {
+    process.env.SEARCH_INDEX_REINDEX_MESSAGE_SCAN_MODE = "partition_scan";
     queryMocks.streamAllMessagesFromChats.mockReturnValueOnce(pages([]));
 
     const result = await reindexSearchDocuments(["messages"]);
@@ -296,7 +326,7 @@ describe("searchIndexer behavior", () => {
     expect(queryMocks.listAllUsers).not.toHaveBeenCalled();
     expect(queryMocks.getUserHistoryForBatch).not.toHaveBeenCalled();
     expect(queryMocks.listUsersByIds).toHaveBeenCalledWith(["u1"]);
-    expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledTimes(1);
+    expect(queryMocks.streamAllMessagesFromChatTable).toHaveBeenCalledTimes(1);
     expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledTimes(1);
     expect(searchIndexMocks.replaceDocuments.mock.calls[0]?.[0]).toContain("messages__shadow_");
     expect(searchIndexMocks.swapIndexes).toHaveBeenCalledTimes(1);
@@ -313,7 +343,38 @@ describe("searchIndexer behavior", () => {
     expect(result.messages).toBe(1);
   });
 
-  it("does not require global in-memory dedupe when the same message appears in multiple reindex phases", async () => {
+  it("uses deferred OpenSearch refreshes during message reindexing", async () => {
+    searchIndexMocks.getSearchBackend.mockReturnValue("opensearch");
+
+    const result = await reindexSearchDocuments(["messages"]);
+
+    expect(searchIndexMocks.updateIndexSettings).toHaveBeenCalledWith(
+      expect.stringContaining("messages__shadow_"),
+      expect.objectContaining({
+        refresh_interval: "-1",
+      })
+    );
+    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledWith(
+      expect.stringContaining("messages__shadow_"),
+      expect.any(Array),
+      expect.objectContaining({
+        refresh: false,
+      })
+    );
+    expect(searchIndexMocks.refreshIndex).toHaveBeenCalledWith(
+      expect.stringContaining("messages__shadow_")
+    );
+    expect(searchIndexMocks.updateIndexSettings).toHaveBeenCalledWith(
+      expect.stringContaining("messages__shadow_"),
+      expect.objectContaining({
+        refresh_interval: "1s",
+      })
+    );
+    expect(result.messages).toBe(1);
+  });
+
+  it("dedupes fetched messages that reappear in multiple reindex phases", async () => {
+    process.env.SEARCH_INDEX_REINDEX_MESSAGE_SCAN_MODE = "partition_scan";
     process.env.SEARCH_INDEX_REINDEX_PHASES = "messages_by_chat,messages_by_user";
     queryMocks.streamAllMessagesFromChats.mockReturnValueOnce(
       pages([
@@ -340,8 +401,83 @@ describe("searchIndexer behavior", () => {
 
     expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledTimes(1);
     expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledTimes(1);
-    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledTimes(2);
+    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledTimes(1);
     expect(result.messages).toBe(1);
+  });
+
+  it("dedupes fetched messages that reappear on later pages in the same phase", async () => {
+    process.env.SEARCH_INDEX_REINDEX_MESSAGE_SCAN_MODE = "partition_scan";
+    queryMocks.streamAllMessagesFromChats.mockReturnValueOnce(
+      pages(
+        [
+          {
+            chat_id: "c1",
+            message_id: "m1",
+            user_id: "u1",
+            content: "hello from chat",
+          },
+        ],
+        [
+          {
+            chat_id: "c1",
+            message_id: "m1",
+            user_id: "u1",
+            content: "hello from chat again",
+          },
+        ]
+      )
+    );
+
+    const result = await reindexSearchDocuments(["messages"]);
+
+    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledTimes(1);
+    expect(result.messages).toBe(1);
+  });
+
+  it("disables unbounded global dedupe once the configured limit is reached", async () => {
+    process.env.SEARCH_INDEX_REINDEX_MESSAGE_SCAN_MODE = "partition_scan";
+    process.env.SEARCH_INDEX_REINDEX_PHASES = "messages_by_chat,messages_by_user";
+    process.env.SEARCH_INDEX_MAX_DEDUPE_KEYS = "1";
+    queryMocks.streamAllMessagesFromChats.mockReturnValueOnce(
+      pages(
+        [
+          {
+            chat_id: "c1",
+            message_id: "m1",
+            user_id: "u1",
+            content: "hello from chat",
+          },
+        ],
+        [
+          {
+            chat_id: "c1",
+            message_id: "m2",
+            user_id: "u1",
+            content: "hello from chat two",
+          },
+        ]
+      )
+    );
+    queryMocks.streamAllMessagesFromUsers.mockReturnValueOnce(
+      pages([
+        {
+          chat_id: "c1",
+          message_id: "m1",
+          user_id: "u1",
+          content: "hello from user partition",
+        },
+      ])
+    );
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await reindexSearchDocuments(["messages"]);
+
+    expect(searchIndexMocks.replaceDocuments).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("message dedupe key limit (1) reached")
+    );
+    expect(result.messages).toBe(1);
+    warnSpy.mockRestore();
   });
 
   it("can disable early message swapping when requested", async () => {
@@ -366,7 +502,8 @@ describe("searchIndexer behavior", () => {
   it("can tune partition scan concurrency for legacy sync", async () => {
     process.env.SEARCH_INDEX_CHAT_SCAN_CONCURRENCY = "6";
     process.env.SEARCH_INDEX_USER_SCAN_CONCURRENCY = "3";
-    process.env.SEARCH_INDEX_MESSAGE_SCAN_MODE = "partition_scan";
+    process.env.SEARCH_INDEX_PARTITION_BUFFER_PAGES = "40";
+    process.env.SEARCH_INDEX_SYNC_MESSAGE_SCAN_MODE = "partition_scan";
     process.env.SEARCH_INDEX_BUCKET_START_YEAR = "2015";
     process.env.SEARCH_INDEX_BUCKET_START_MONTH = "4";
 
@@ -377,8 +514,9 @@ describe("searchIndexer behavior", () => {
     expect(queryMocks.streamAllMessagesFromChats).toHaveBeenCalledWith(
       ["c1"],
       expect.objectContaining({
-        fetchSize: 10000,
+        fetchSize: 20000,
         concurrency: 6,
+        maxBufferedPages: 40,
         bucketStartYear: 2015,
         bucketStartMonth: 4,
       })
@@ -386,8 +524,9 @@ describe("searchIndexer behavior", () => {
     expect(queryMocks.streamAllMessagesFromUsers).toHaveBeenCalledWith(
       ["u1"],
       expect.objectContaining({
-        fetchSize: 10000,
+        fetchSize: 20000,
         concurrency: 3,
+        maxBufferedPages: 40,
         bucketStartYear: 2015,
         bucketStartMonth: 4,
       })

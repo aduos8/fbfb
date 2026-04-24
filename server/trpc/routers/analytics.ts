@@ -23,6 +23,40 @@ const STOP_WORDS = new Set([
   "than", "too", "very", "just", "about", "up", "out", "no", "yes", "all",
 ]);
 
+function normalizeCounterValue(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  if (value && typeof value === "object") {
+    const maybeWithToNumber = value as { toNumber?: () => number };
+    if (typeof maybeWithToNumber.toNumber === "function") {
+      const parsed = maybeWithToNumber.toNumber();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    const maybeWithValueOf = value as { valueOf?: () => unknown };
+    if (typeof maybeWithValueOf.valueOf === "function") {
+      const primitive = maybeWithValueOf.valueOf();
+      if (primitive !== value) {
+        return normalizeCounterValue(primitive);
+      }
+    }
+  }
+
+  const parsed = Number(String(value ?? 0));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function currentBucket() {
   const now = new Date();
   return `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -31,6 +65,10 @@ function currentBucket() {
 function filterTopWords(rows: Array<{ word: string; count: number }>) {
   return rows
     .filter((row) => row.word && !STOP_WORDS.has(row.word.toLowerCase()))
+    .map((row) => ({
+      word: row.word,
+      count: normalizeCounterValue(row.count),
+    }))
     .sort((left, right) => right.count - left.count)
     .slice(0, 50);
 }
@@ -80,7 +118,7 @@ async function buildUserAnalyticsData(
       chatType: chat?.chat_type ?? null,
       firstMessageAt: meta?.first_message_at ? new Date(meta.first_message_at).toISOString() : null,
       lastMessageAt: meta?.last_message_at ? new Date(meta.last_message_at).toISOString() : null,
-      messageCount: Number(countMap.get(chatId) ?? 0),
+      messageCount: normalizeCounterValue(countMap.get(chatId)),
     };
   }).sort((left, right) => right.messageCount - left.messageCount);
 

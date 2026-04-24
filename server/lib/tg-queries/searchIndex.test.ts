@@ -73,6 +73,33 @@ describe("searchIndex adapter", () => {
     );
   });
 
+  it("can skip OpenSearch bulk refresh waits for background indexing", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ errors: false, items: [{ index: { status: 201 } }] }), {
+        status: 200,
+      })
+    );
+
+    const { updateDocuments } = await import("./searchIndex");
+    await updateDocuments("messages", [
+      {
+        documentId: "c1_m1",
+        content: "hello",
+      },
+    ], {
+      refresh: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://opensearch:9200/messages/_bulk",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
   it("normalizes OpenSearch search totals and highlights", async () => {
     process.env.SEARCH_BACKEND = "opensearch";
     process.env.OPENSEARCH_URL = "http://opensearch:9200";
@@ -131,6 +158,63 @@ describe("searchIndex adapter", () => {
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining('"track_total_hits":true'),
+      })
+    );
+  });
+
+  it("uses AND semantics for multi-word OpenSearch message queries", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          took: 3,
+          hits: {
+            total: { value: 0, relation: "eq" },
+            hits: [],
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const { searchIndex } = await import("./searchIndex");
+    await searchIndex("messages", {
+      q: "i shat",
+      page: 1,
+      hitsPerPage: 25,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://opensearch:9200/messages/_search",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          from: 0,
+          size: 25,
+          track_total_hits: true,
+          query: {
+            bool: {
+              must: [
+                {
+                  multi_match: {
+                    query: "i shat",
+                    fields: [
+                      "content",
+                      "senderUsername",
+                      "senderDisplayName",
+                      "chatTitle",
+                      "chatUsername",
+                    ],
+                    operator: "and",
+                    fuzziness: "AUTO",
+                  },
+                },
+              ],
+              filter: [],
+            },
+          },
+        }),
       })
     );
   });
@@ -259,6 +343,95 @@ describe("searchIndex adapter", () => {
       expect.objectContaining({
         method: "PUT",
         body: expect.stringContaining('"profiles__shadow_run"'),
+      })
+    );
+  });
+
+  it("refreshes an OpenSearch index on demand", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ _shards: { successful: 1 } }), { status: 200 })
+    );
+
+    const { refreshIndex } = await import("./searchIndex");
+    const task = await refreshIndex("messages__shadow_run");
+
+    expect(task.status).toBe("succeeded");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://opensearch:9200/messages__shadow_run/_refresh",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
+  it("updates OpenSearch dynamic settings on alias-backed indexes", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/_alias/messages__shadow_run")) {
+        return new Response(JSON.stringify({
+          messages__shadow_run__backing_v1: { aliases: { messages__shadow_run: {} } },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/messages__shadow_run__backing_v1/_settings")) {
+        return new Response(JSON.stringify({ acknowledged: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const { updateIndexSettings } = await import("./searchIndex");
+    const task = await updateIndexSettings("messages__shadow_run", {
+      refresh_interval: "-1",
+    });
+
+    expect(task.status).toBe("succeeded");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://opensearch:9200/messages__shadow_run__backing_v1/_settings",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          index: {
+            refresh_interval: "-1",
+          },
+        }),
+      })
+    );
+  });
+
+  it("omits create-only OpenSearch settings when updating existing indexes", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/_alias/profiles")) {
+        return new Response(JSON.stringify({
+          profiles__backing_v1: { aliases: { profiles: {} } },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/profiles__backing_v1/_settings")) {
+        return new Response(JSON.stringify({ acknowledged: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const { updateIndexSettings } = await import("./searchIndex");
+    await updateIndexSettings("profiles", {
+      number_of_shards: 1,
+      number_of_replicas: 0,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://opensearch:9200/profiles__backing_v1/_settings",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          index: {
+            number_of_replicas: 0,
+          },
+        }),
       })
     );
   });

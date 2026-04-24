@@ -430,30 +430,32 @@ async function* streamWholeMessageTable(
   fetchSize = 5000
 ): AsyncGenerator<MessageRecord[]> {
   const client = getClient();
-  let pageState: Buffer | null = null;
   let pageCount = 0;
   let rowCount = 0;
+  let page: MessageRecord[] = [];
+  const rowStream = client.stream(query, [], {
+    prepare: true,
+    fetchSize,
+  }) as unknown as AsyncIterable<unknown>;
 
-  do {
-    const result = await client.execute(query, [], {
-      prepare: true,
-      fetchSize,
-      pageState: pageState as any,
-    });
+  for await (const row of rowStream) {
+    page.push(row as MessageRecord);
+    rowCount += 1;
 
-    const rows = result.rows as unknown as MessageRecord[];
-    if (rows.length > 0) {
-      rowCount += rows.length;
-      yield rows;
+    if (page.length >= fetchSize) {
+      pageCount += 1;
+      yield page;
+      if (pageCount % 10 === 0) {
+        console.log(`[${label}] fetched ${rowCount} rows across ${pageCount} pages...`);
+      }
+      page = [];
     }
+  }
 
+  if (page.length > 0) {
     pageCount += 1;
-    if (pageCount % 10 === 0) {
-      console.log(`[${label}] fetched ${rowCount} rows across ${pageCount} pages...`);
-    }
-
-    pageState = (result as any).pageState ?? null;
-  } while (pageState);
+    yield page;
+  }
 
   console.log(`[${label}] done: ${rowCount} total rows`);
 }
@@ -629,9 +631,11 @@ async function* streamPartitionedMessages(
 
   const buckets = generateBuckets(options.bucketStartYear, options.bucketStartMonth);
   const queue = createAsyncQueue<MessageRecord[]>(options.maxBufferedPages);
-  const workerCount = Math.min(options.concurrency, entityIds.length);
-  let nextEntityIndex = 0;
-  let processedEntities = 0;
+  const totalPartitions = entityIds.length * buckets.length;
+  const workerCount = Math.min(options.concurrency, totalPartitions);
+  const progressEveryPartitions = Math.max(1, definition.progressEvery * buckets.length);
+  let nextPartitionIndex = 0;
+  let processedPartitions = 0;
   let totalYielded = 0;
   let settledWorkers = 0;
 
@@ -643,42 +647,43 @@ async function* streamPartitionedMessages(
   const workers = Array.from({ length: workerCount }, async () => {
     try {
       while (true) {
-        const entityIndex = nextEntityIndex++;
-        if (entityIndex >= entityIds.length) {
+        const partitionIndex = nextPartitionIndex++;
+        if (partitionIndex >= totalPartitions) {
           return;
         }
 
+        const entityIndex = partitionIndex % entityIds.length;
+        const bucketIndex = Math.floor(partitionIndex / entityIds.length);
         const entityId = entityIds[entityIndex]!;
-        for (const bucket of buckets) {
-          let pageState: Buffer | null = null;
+        const bucket = buckets[bucketIndex]!;
+        let pageState: Buffer | null = null;
 
-          do {
-            const result = await client.execute(
-              definition.query,
-              definition.buildParams(entityId, bucket),
-              {
-                prepare: true,
-                fetchSize: options.fetchSize,
-                pageState: pageState as any,
-              }
-            );
-
-            const rows = result.rows as unknown as MessageRecord[];
-            if (rows.length > 0) {
-              await queue.push(rows);
+        do {
+          const result = await client.execute(
+            definition.query,
+            definition.buildParams(entityId, bucket),
+            {
+              prepare: true,
+              fetchSize: options.fetchSize,
+              pageState: pageState as any,
             }
+          );
 
-            pageState = (result as any).pageState ?? null;
-          } while (pageState);
-        }
+          const rows = result.rows as unknown as MessageRecord[];
+          if (rows.length > 0) {
+            await queue.push(rows);
+          }
 
-        processedEntities += 1;
+          pageState = (result as any).pageState ?? null;
+        } while (pageState);
+
+        processedPartitions += 1;
         if (
-          processedEntities % definition.progressEvery === 0
-          || processedEntities === entityIds.length
+          processedPartitions % progressEveryPartitions === 0
+          || processedPartitions === totalPartitions
         ) {
           console.log(
-            `[${definition.label}] processed ${processedEntities}/${entityIds.length} ${definition.entityLabel} ` +
+            `[${definition.label}] processed ${processedPartitions}/${totalPartitions} partitions ` +
             `(${totalYielded} messages yielded so far)...`
           );
         }

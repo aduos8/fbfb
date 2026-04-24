@@ -111,6 +111,13 @@ type MessageDocument = {
   timestampMs: number | null;
 };
 
+type RankedProfileDocument = ProfileDocument & { _rankingScore?: number };
+type RankedChatDocument = ChatDocument & { _rankingScore?: number };
+type RankedMessageDocument = MessageDocument & {
+  _rankingScore?: number;
+  _formatted?: Record<string, string>;
+};
+
 type SearchResultPage<T extends SearchResult> = {
   results: T[];
   total: number;
@@ -376,11 +383,27 @@ function messageKeywordMatches(document: MessageDocument, keyword: string | unde
     return true;
   }
 
-  return textIncludes(document.content, keyword)
-    || textIncludes(document.senderUsername, keyword)
-    || textIncludes(document.senderDisplayName, keyword)
-    || textIncludes(document.chatTitle, keyword)
-    || textIncludes(document.chatUsername, keyword);
+  const terms = keyword
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  if (terms.length === 0) {
+    return true;
+  }
+
+  const searchableText = [
+    document.content,
+    document.senderUsername,
+    document.senderDisplayName,
+    document.chatTitle,
+    document.chatUsername,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .toLowerCase();
+
+  return terms.every((term) => searchableText.includes(term));
 }
 
 function filterMessageDocument(document: MessageDocument, input: MessageSearchInput) {
@@ -520,7 +543,9 @@ function isMissingContentCharacterSetFilter(error: unknown) {
     && error.message.includes("not filterable");
 }
 
-async function searchProfilesViaIndex(input: ProfileSearchInput) {
+async function searchProfilesViaIndex(
+  input: ProfileSearchInput
+): Promise<{ hits: RankedProfileDocument[]; total: number }> {
   const querySource = cleanSearchValue(input.query)
     ?? cleanSearchValue(input.filters.username)
     ?? cleanSearchValue(input.filters.displayName)
@@ -535,14 +560,17 @@ async function searchProfilesViaIndex(input: ProfileSearchInput) {
     showRankingScore: true,
   });
 
-  const hits = response.hits.filter((hit) => filterProfileDocument(hit, input));
+  const hits = (response.hits as RankedProfileDocument[]).filter((hit) => filterProfileDocument(hit, input));
   return {
     hits,
     total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
   };
 }
 
-async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSearchInput | GroupSearchInput) {
+async function searchChatsViaIndex(
+  kind: "channel" | "group",
+  input: ChannelSearchInput | GroupSearchInput
+): Promise<{ hits: RankedChatDocument[]; total: number }> {
   const querySource = cleanSearchValue(input.query)
     ?? cleanSearchValue(input.filters.username)
     ?? ("title" in input.filters ? cleanSearchValue(input.filters.title) : undefined)
@@ -559,14 +587,16 @@ async function searchChatsViaIndex(kind: "channel" | "group", input: ChannelSear
     sort: ["memberCount:desc"],
   });
 
-  const hits = response.hits.filter((hit) => filterChatDocument(hit, input));
+  const hits = (response.hits as RankedChatDocument[]).filter((hit) => filterChatDocument(hit, input));
   return {
     hits,
     total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
   };
 }
 
-async function searchMessagesViaIndex(input: MessageSearchInput) {
+async function searchMessagesViaIndex(
+  input: MessageSearchInput
+): Promise<{ hits: RankedMessageDocument[]; total: number }> {
   const keyword = cleanSearchValue(input.filters.keyword ?? input.query) ?? "";
   const keywordSearch = buildMessageKeywordSearch(keyword);
   const request = () => searchPreferredIndex<MessageDocument>("messages", SEARCH_INDEXES.messages, {
@@ -593,15 +623,15 @@ async function searchMessagesViaIndex(input: MessageSearchInput) {
     response = await request();
   }
 
-  const hits = response.hits.filter((hit) => filterMessageDocument(hit, input));
+  const hits = (response.hits as RankedMessageDocument[]).filter((hit) => filterMessageDocument(hit, input));
   return {
     hits,
-    total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    total: hits.length > 0 ? (response.estimatedTotalHits ?? response.totalHits ?? hits.length) : 0,
   };
 }
 
 async function buildProfileResults(
-  documents: Array<ProfileDocument & { _rankingScore?: number }>,
+  documents: RankedProfileDocument[],
   input: ProfileSearchInput,
   context: SearchContext,
   historyMap?: Map<string, import("./queries").HistoryRecordLight[]>
@@ -704,7 +734,7 @@ function getFirstAndLastSeenFromHistory(records: import("./queries").HistoryReco
 }
 
 async function buildChannelResults(
-  documents: Array<ChatDocument & { _rankingScore?: number }>,
+  documents: RankedChatDocument[],
   input: ChannelSearchInput,
   context: SearchContext
 ): Promise<ChannelResult[]> {
@@ -745,7 +775,7 @@ async function buildChannelResults(
 }
 
 async function buildGroupResults(
-  documents: Array<ChatDocument & { _rankingScore?: number }>,
+  documents: RankedChatDocument[],
   input: GroupSearchInput,
   context: SearchContext
 ): Promise<GroupResult[]> {
@@ -810,7 +840,7 @@ function mergeRedactions(...redactions: Array<ResolvedRedaction | null | undefin
 }
 
 async function buildMessageResults(
-  documents: Array<MessageDocument & { _rankingScore?: number; _formatted?: Record<string, string> }>,
+  documents: RankedMessageDocument[],
   input: MessageSearchInput,
   context: SearchContext
 ): Promise<MessageResult[]> {

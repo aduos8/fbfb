@@ -163,6 +163,9 @@ const OPENSEARCH_KEYWORD_SUBFIELDS = new Set([
   "chatUsername",
   "title",
 ]);
+const OPENSEARCH_CREATE_ONLY_INDEX_SETTINGS = new Set([
+  "number_of_shards",
+]);
 
 const INDEX_DEFINITIONS: Record<keyof SearchIndexMap, IndexDefinition> = {
   profiles: {
@@ -587,6 +590,12 @@ function buildOpenSearchBackingIndexName(alias: string) {
   return `${alias}__backing_v1`;
 }
 
+function getMutableOpenSearchIndexSettings(settings: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(settings).filter(([key]) => !OPENSEARCH_CREATE_ONLY_INDEX_SETTINGS.has(key))
+  );
+}
+
 async function createOpenSearchConcreteIndex(indexName: string, alias: string) {
   const definition = getIndexDefinition(alias).opensearch;
   return request(`/${encodeURIComponent(indexName)}`, {
@@ -639,6 +648,19 @@ async function ensureOpenSearchAliasIndex(alias: string) {
     target: backingIndexName,
     created: true,
   });
+}
+
+async function resolveOpenSearchIndexTargets(uid: string) {
+  const aliasTargets = await getOpenSearchAliasTargets(uid);
+  if (aliasTargets.length > 0) {
+    return aliasTargets;
+  }
+
+  if (await headRequest(`/${encodeURIComponent(uid)}`)) {
+    return [uid];
+  }
+
+  return [] as string[];
 }
 
 function toMeilisearchFilterValue(value: SearchFilterValue) {
@@ -749,6 +771,7 @@ function buildOpenSearchMustClause(uid: string, query: string | undefined) {
       multi_match: {
         query: cleaned,
         fields: definition.searchableAttributes,
+        ...(role === "messages" && /\s/.test(cleaned) ? { operator: "and" as const } : {}),
         fuzziness: "AUTO",
       },
     },
@@ -1056,8 +1079,33 @@ export async function deleteIndex(uid: string) {
 export async function updateIndexSettings(uid: string, settings: Record<string, unknown>) {
   const config = getConfig();
   if (config.backend === "opensearch") {
-    void settings;
-    return ensureOpenSearchAliasIndex(uid);
+    await ensureOpenSearchAliasIndex(uid);
+    const targets = await resolveOpenSearchIndexTargets(uid);
+    const normalizedSettings =
+      settings.index && typeof settings.index === "object"
+        ? settings.index as Record<string, unknown>
+        : settings;
+    const mutableSettings = getMutableOpenSearchIndexSettings(normalizedSettings);
+
+    if (targets.length === 0 || Object.keys(mutableSettings).length === 0) {
+      return createSyntheticTask(uid, "update-settings", {
+        targets,
+        applied: false,
+      });
+    }
+
+    await request(`/${targets.map(encodeURIComponent).join(",")}/_settings`, {
+      method: "PUT",
+      body: JSON.stringify({
+        index: mutableSettings,
+      }),
+    });
+
+    return createSyntheticTask(uid, "update-settings", {
+      targets,
+      applied: true,
+      settings: mutableSettings,
+    });
   }
 
   return request<MeilisearchTask>(`/indexes/${encodeURIComponent(uid)}/settings`, {
@@ -1262,6 +1310,7 @@ export async function searchIndex<T extends Record<string, unknown>>(uid: string
 }
 
 export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_INDEXES) {
+  const config = getConfig();
   const profileIndexTask = await ensureIndex(indexes.profiles, "userId");
   if (isTrackedSearchTaskId(profileIndexTask?.taskUid)) {
     await waitForTask(profileIndexTask.taskUid);
@@ -1269,7 +1318,9 @@ export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_IN
 
   const profileSettingsTask = await updateIndexSettings(
     indexes.profiles,
-    INDEX_DEFINITIONS.profiles.meilisearchSettings
+    config.backend === "opensearch"
+      ? INDEX_DEFINITIONS.profiles.opensearch.settings.index as Record<string, unknown>
+      : INDEX_DEFINITIONS.profiles.meilisearchSettings
   );
   if (isTrackedSearchTaskId(profileSettingsTask.taskUid)) {
     await waitForTask(profileSettingsTask.taskUid);
@@ -1282,7 +1333,9 @@ export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_IN
 
   const chatSettingsTask = await updateIndexSettings(
     indexes.chats,
-    INDEX_DEFINITIONS.chats.meilisearchSettings
+    config.backend === "opensearch"
+      ? INDEX_DEFINITIONS.chats.opensearch.settings.index as Record<string, unknown>
+      : INDEX_DEFINITIONS.chats.meilisearchSettings
   );
   if (isTrackedSearchTaskId(chatSettingsTask.taskUid)) {
     await waitForTask(chatSettingsTask.taskUid);
@@ -1295,7 +1348,9 @@ export async function configureSearchIndices(indexes: SearchIndexMap = SEARCH_IN
 
   const messageSettingsTask = await updateIndexSettings(
     indexes.messages,
-    INDEX_DEFINITIONS.messages.meilisearchSettings
+    config.backend === "opensearch"
+      ? INDEX_DEFINITIONS.messages.opensearch.settings.index as Record<string, unknown>
+      : INDEX_DEFINITIONS.messages.meilisearchSettings
   );
   if (isTrackedSearchTaskId(messageSettingsTask.taskUid)) {
     await waitForTask(messageSettingsTask.taskUid);

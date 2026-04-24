@@ -2,9 +2,19 @@ function stripWrappingQuotes(value: string) {
   return value.replace(/^['"]+|['"]+$/g, "");
 }
 
+function getBunArgv() {
+  const runtime = globalThis as typeof globalThis & {
+    Bun?: {
+      argv?: string[];
+    };
+  };
+
+  return Array.isArray(runtime.Bun?.argv) ? runtime.Bun.argv : [];
+}
+
 export function getSearchReindexCliArgs(
   processArgv: string[] = process.argv,
-  bunArgv: string[] = typeof Bun !== "undefined" ? Bun.argv : []
+  bunArgv: string[] = getBunArgv()
 ) {
   const raw = [...processArgv, ...bunArgv];
   const normalized: string[] = [];

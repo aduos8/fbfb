@@ -468,6 +468,47 @@ describe("runMessageSearch", () => {
     expect(result.results).toHaveLength(1);
     expect(result.results[0]?.sender.username).toBe("alice");
   });
+
+  it("returns zero totals when loose index hits are filtered out for a multi-word message query", async () => {
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          documentId: "c1_m6",
+          messageId: "m6",
+          chatId: "c1",
+          senderId: "u1",
+          senderUsername: "alice",
+          senderDisplayName: "Alice",
+          chatTitle: "General",
+          chatType: "group",
+          chatUsername: "general",
+          content: "i only",
+          contentCharacterSet: ["i", "o", "n", "l", "y"],
+          hasMedia: false,
+          containsLinks: false,
+          contentLength: 6,
+          bucket: "202403",
+          timestamp: "2024-03-10T12:00:00.000Z",
+          timestampMs: 1710072000000,
+        },
+      ],
+      totalHits: 16989542,
+    });
+
+    const result = await runMessageSearch(
+      {
+        type: "message",
+        page: 1,
+        limit: 25,
+        query: "i shat",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(result.total).toBe(0);
+    expect(result.results).toEqual([]);
+  });
 });
 
 describe("runChannelSearch", () => {
