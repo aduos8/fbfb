@@ -235,6 +235,51 @@ function getSearchResponseTotal<T extends Record<string, unknown>>(response: {
   return response.estimatedTotalHits ?? response.totalHits ?? response.hits.length;
 }
 
+function resolveVisiblePageTotal(options: {
+  page: number;
+  limit: number;
+  rawHitsCount: number;
+  visibleHitsCount: number;
+  reportedTotal?: number;
+}) {
+  const {
+    page,
+    limit,
+    rawHitsCount,
+    visibleHitsCount,
+    reportedTotal,
+  } = options;
+
+  if (visibleHitsCount === 0) {
+    return 0;
+  }
+
+  if (visibleHitsCount < rawHitsCount) {
+    return Math.max((page - 1) * limit + visibleHitsCount, visibleHitsCount);
+  }
+
+  return reportedTotal ?? visibleHitsCount;
+}
+
+function isCassandraUnavailableError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (error.name === "NoHostAvailableError") {
+    return true;
+  }
+
+  return error.message.includes("All host(s) tried for query failed.");
+}
+
+function logCassandraSearchFallback(operation: string, error: unknown) {
+  console.warn(
+    `[search] ${operation} Cassandra lookup unavailable, falling back to indexed search.`,
+    error
+  );
+}
+
 async function searchShadowBackingFallback<T extends Record<string, unknown>>(
   scope: SearchIndexScope,
   payload: Parameters<typeof searchIndex<T>>[1],
@@ -563,7 +608,13 @@ async function searchProfilesViaIndex(
   const hits = (response.hits as RankedProfileDocument[]).filter((hit) => filterProfileDocument(hit, input));
   return {
     hits,
-    total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: response.hits.length,
+      visibleHitsCount: hits.length,
+      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    }),
   };
 }
 
@@ -590,7 +641,13 @@ async function searchChatsViaIndex(
   const hits = (response.hits as RankedChatDocument[]).filter((hit) => filterChatDocument(hit, input));
   return {
     hits,
-    total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: response.hits.length,
+      visibleHitsCount: hits.length,
+      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    }),
   };
 }
 
@@ -626,7 +683,13 @@ async function searchMessagesViaIndex(
   const hits = (response.hits as RankedMessageDocument[]).filter((hit) => filterMessageDocument(hit, input));
   return {
     hits,
-    total: hits.length > 0 ? (response.estimatedTotalHits ?? response.totalHits ?? hits.length) : 0,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: response.hits.length,
+      visibleHitsCount: hits.length,
+      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+    }),
   };
 }
 
@@ -976,44 +1039,13 @@ export async function runProfileSearch(input: ProfileSearchInput, context: Searc
   const exactUserId = input.filters.userId ?? (queryInfo.isNumeric ? queryInfo.query : undefined);
 
   if (exactUserId) {
-    const user = await getUserById(exactUserId);
-    if (!user) return { results: [], total: 0 };
-    const historyMap = await getUserHistoryForBatch([user.user_id]);
-    const historyRecords = historyMap.get(user.user_id) || [];
-    const historyUsernames = getLatestHistoryValue(historyRecords, "usernames");
-    let effectiveUsername = user.username ?? null;
-    if (!effectiveUsername && historyUsernames) {
-      try {
-        const usernamesArr = JSON.parse(historyUsernames);
-        effectiveUsername = Array.isArray(usernamesArr) ? usernamesArr[usernamesArr.length - 1] : usernamesArr;
-      } catch {
-        effectiveUsername = historyUsernames;
-      }
-    }
-    const results = await buildProfileResults([{
-      userId: user.user_id,
-      username: effectiveUsername,
-      displayName: user.display_name ?? null,
-      bio: user.bio ?? null,
-      profilePhoto: user.avatar_url ?? null,
-      phoneHash: user.phone_hash ?? null,
-      phoneMasked: user.phone_masked ?? null,
-      createdAt: serializeDate(user.created_at),
-      updatedAt: serializeDate(user.updated_at),
-      isTelegramPremium: user.is_premium ?? null,
-      _rankingScore: 1,
-    }], input, context, historyMap);
-    return { results, total: results.length };
-  }
-
-  const exactUsername = normalizeHandle(input.filters.username ?? (queryInfo.isHandle ? queryInfo.query : undefined));
-  if (exactUsername) {
-    const exact = await getUserByUsername(exactUsername);
-    if (exact) {
-      const historyMap = await getUserHistoryForBatch([exact.user_id]);
-      const historyRecords = historyMap.get(exact.user_id) || [];
+    try {
+      const user = await getUserById(exactUserId);
+      if (!user) return { results: [], total: 0 };
+      const historyMap = await getUserHistoryForBatch([user.user_id]);
+      const historyRecords = historyMap.get(user.user_id) || [];
       const historyUsernames = getLatestHistoryValue(historyRecords, "usernames");
-      let effectiveUsername = exact.username ?? null;
+      let effectiveUsername = user.username ?? null;
       if (!effectiveUsername && historyUsernames) {
         try {
           const usernamesArr = JSON.parse(historyUsernames);
@@ -1023,21 +1055,73 @@ export async function runProfileSearch(input: ProfileSearchInput, context: Searc
         }
       }
       const results = await buildProfileResults([{
-        userId: exact.user_id,
+        userId: user.user_id,
         username: effectiveUsername,
-        displayName: exact.display_name ?? null,
-        bio: exact.bio ?? null,
-        profilePhoto: exact.avatar_url ?? null,
-        phoneHash: exact.phone_hash ?? null,
-        phoneMasked: exact.phone_masked ?? null,
-        createdAt: serializeDate(exact.created_at),
-        updatedAt: serializeDate(exact.updated_at),
-        isTelegramPremium: exact.is_premium ?? null,
+        displayName: user.display_name ?? null,
+        bio: user.bio ?? null,
+        profilePhoto: user.avatar_url ?? null,
+        phoneHash: user.phone_hash ?? null,
+        phoneMasked: user.phone_masked ?? null,
+        createdAt: serializeDate(user.created_at),
+        updatedAt: serializeDate(user.updated_at),
+        isTelegramPremium: user.is_premium ?? null,
         _rankingScore: 1,
       }], input, context, historyMap);
-      if (results.length > 0) {
-        return { results, total: results.length };
+      return { results, total: results.length };
+    } catch (error) {
+      if (!isCassandraUnavailableError(error)) {
+        throw error;
       }
+      logCassandraSearchFallback(`profile exact user ID (${exactUserId})`, error);
+      input = {
+        ...input,
+        filters: {
+          ...input.filters,
+          userId: exactUserId,
+        },
+      };
+    }
+  }
+
+  const exactUsername = normalizeHandle(input.filters.username ?? (queryInfo.isHandle ? queryInfo.query : undefined));
+  if (exactUsername) {
+    try {
+      const exact = await getUserByUsername(exactUsername);
+      if (exact) {
+        const historyMap = await getUserHistoryForBatch([exact.user_id]);
+        const historyRecords = historyMap.get(exact.user_id) || [];
+        const historyUsernames = getLatestHistoryValue(historyRecords, "usernames");
+        let effectiveUsername = exact.username ?? null;
+        if (!effectiveUsername && historyUsernames) {
+          try {
+            const usernamesArr = JSON.parse(historyUsernames);
+            effectiveUsername = Array.isArray(usernamesArr) ? usernamesArr[usernamesArr.length - 1] : usernamesArr;
+          } catch {
+            effectiveUsername = historyUsernames;
+          }
+        }
+        const results = await buildProfileResults([{
+          userId: exact.user_id,
+          username: effectiveUsername,
+          displayName: exact.display_name ?? null,
+          bio: exact.bio ?? null,
+          profilePhoto: exact.avatar_url ?? null,
+          phoneHash: exact.phone_hash ?? null,
+          phoneMasked: exact.phone_masked ?? null,
+          createdAt: serializeDate(exact.created_at),
+          updatedAt: serializeDate(exact.updated_at),
+          isTelegramPremium: exact.is_premium ?? null,
+          _rankingScore: 1,
+        }], input, context, historyMap);
+        if (results.length > 0) {
+          return { results, total: results.length };
+        }
+      }
+    } catch (error) {
+      if (!isCassandraUnavailableError(error)) {
+        throw error;
+      }
+      logCassandraSearchFallback(`profile exact username (${exactUsername})`, error);
     }
   }
 
@@ -1045,67 +1129,131 @@ export async function runProfileSearch(input: ProfileSearchInput, context: Searc
   const indexedUserIds = indexed.hits.map(h => h.userId);
   const historyMap = indexedUserIds.length > 0 ? await getUserHistoryForBatch(indexedUserIds) : new Map();
   const results = await buildProfileResults(indexed.hits, input, context, historyMap);
-  return { results, total: indexed.total };
+  return {
+    results,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: indexed.hits.length,
+      visibleHitsCount: results.length,
+      reportedTotal: indexed.total,
+    }),
+  };
 }
 
 export async function runChannelSearch(input: ChannelSearchInput, context: SearchContext): Promise<SearchResultPage<ChannelResult>> {
   const queryInfo = classifyQuery(input.query);
   const exactChatId = input.filters.channelId ?? (queryInfo.isNumeric ? queryInfo.query : undefined);
   if (exactChatId) {
-    const chat = await getChatById(exactChatId);
-    if (!chat || chat.chat_type !== "channel") return { results: [], total: 0 };
-    const results = await buildChannelResults([{
-      chatId: chat.chat_id,
-      chatType: chat.chat_type ?? null,
-      username: chat.username ?? null,
-      title: chat.display_name ?? null,
-      description: chat.bio ?? null,
-      memberCount: chat.member_count ?? null,
-      participantCount: chat.participants_count ?? null,
-      profilePhoto: chat.avatar_url ?? null,
-      createdAt: serializeDate(chat.created_at),
-      updatedAt: serializeDate(chat.updated_at),
-      _rankingScore: 1,
-    }], input, context);
-    return { results, total: results.length };
+    try {
+      const chat = await getChatById(exactChatId);
+      if (!chat || chat.chat_type !== "channel") return { results: [], total: 0 };
+      const results = await buildChannelResults([{
+        chatId: chat.chat_id,
+        chatType: chat.chat_type ?? null,
+        username: chat.username ?? null,
+        title: chat.display_name ?? null,
+        description: chat.bio ?? null,
+        memberCount: chat.member_count ?? null,
+        participantCount: chat.participants_count ?? null,
+        profilePhoto: chat.avatar_url ?? null,
+        createdAt: serializeDate(chat.created_at),
+        updatedAt: serializeDate(chat.updated_at),
+        _rankingScore: 1,
+      }], input, context);
+      return { results, total: results.length };
+    } catch (error) {
+      if (!isCassandraUnavailableError(error)) {
+        throw error;
+      }
+      logCassandraSearchFallback(`channel exact chat ID (${exactChatId})`, error);
+      input = {
+        ...input,
+        filters: {
+          ...input.filters,
+          channelId: exactChatId,
+        },
+      };
+    }
   }
 
   const indexed = await searchChatsViaIndex("channel", input);
   const results = await buildChannelResults(indexed.hits, input, context);
-  return { results, total: indexed.total };
+  return {
+    results,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: indexed.hits.length,
+      visibleHitsCount: results.length,
+      reportedTotal: indexed.total,
+    }),
+  };
 }
 
 export async function runGroupSearch(input: GroupSearchInput, context: SearchContext): Promise<SearchResultPage<GroupResult>> {
   const queryInfo = classifyQuery(input.query);
   const exactChatId = input.filters.chatId ?? (queryInfo.isNumeric ? queryInfo.query : undefined);
   if (exactChatId) {
-    const chat = await getChatById(exactChatId);
-    if (!chat || !["group", "supergroup"].includes(chat.chat_type ?? "")) return { results: [], total: 0 };
-    const results = await buildGroupResults([{
-      chatId: chat.chat_id,
-      chatType: chat.chat_type ?? null,
-      username: chat.username ?? null,
-      title: chat.display_name ?? null,
-      description: chat.bio ?? null,
-      memberCount: chat.member_count ?? null,
-      participantCount: chat.participants_count ?? null,
-      profilePhoto: chat.avatar_url ?? null,
-      createdAt: serializeDate(chat.created_at),
-      updatedAt: serializeDate(chat.updated_at),
-      _rankingScore: 1,
-    }], input, context);
-    return { results, total: results.length };
+    try {
+      const chat = await getChatById(exactChatId);
+      if (!chat || !["group", "supergroup"].includes(chat.chat_type ?? "")) return { results: [], total: 0 };
+      const results = await buildGroupResults([{
+        chatId: chat.chat_id,
+        chatType: chat.chat_type ?? null,
+        username: chat.username ?? null,
+        title: chat.display_name ?? null,
+        description: chat.bio ?? null,
+        memberCount: chat.member_count ?? null,
+        participantCount: chat.participants_count ?? null,
+        profilePhoto: chat.avatar_url ?? null,
+        createdAt: serializeDate(chat.created_at),
+        updatedAt: serializeDate(chat.updated_at),
+        _rankingScore: 1,
+      }], input, context);
+      return { results, total: results.length };
+    } catch (error) {
+      if (!isCassandraUnavailableError(error)) {
+        throw error;
+      }
+      logCassandraSearchFallback(`group exact chat ID (${exactChatId})`, error);
+      input = {
+        ...input,
+        filters: {
+          ...input.filters,
+          chatId: exactChatId,
+        },
+      };
+    }
   }
 
   const indexed = await searchChatsViaIndex("group", input);
   const results = await buildGroupResults(indexed.hits, input, context);
-  return { results, total: indexed.total };
+  return {
+    results,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: indexed.hits.length,
+      visibleHitsCount: results.length,
+      reportedTotal: indexed.total,
+    }),
+  };
 }
 
 export async function runMessageSearch(input: MessageSearchInput, context: SearchContext): Promise<SearchResultPage<MessageResult>> {
   const indexed = await searchMessagesViaIndex(input);
   const results = await buildMessageResults(indexed.hits, input, context);
-  return { results, total: indexed.total };
+  return {
+    results,
+    total: resolveVisiblePageTotal({
+      page: input.page,
+      limit: input.limit,
+      rawHitsCount: indexed.hits.length,
+      visibleHitsCount: results.length,
+      reportedTotal: indexed.total,
+    }),
+  };
 }
 
 export async function getLookupMessage(

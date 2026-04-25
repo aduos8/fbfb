@@ -335,9 +335,11 @@ export async function runTrackingMonitorCycle() {
   }
 
   isCycleRunning = true;
+  let lockConnection: Awaited<ReturnType<typeof sql.reserve>> | null = null;
 
   try {
-    const [lockRow] = await sql<{ locked: boolean }[]>`
+    lockConnection = await sql.reserve();
+    const [lockRow] = await lockConnection<{ locked: boolean }[]>`
       SELECT pg_try_advisory_lock(${TRACKING_MONITOR_LOCK_ID}) AS locked
     `;
 
@@ -356,11 +358,14 @@ export async function runTrackingMonitorCycle() {
         await processPausedTrackingRenewal(tracking);
       }
     } finally {
-      await sql`SELECT pg_advisory_unlock(${TRACKING_MONITOR_LOCK_ID})`;
+      await lockConnection`SELECT pg_advisory_unlock(${TRACKING_MONITOR_LOCK_ID})`;
     }
 
     return true;
   } finally {
+    if (lockConnection) {
+      await lockConnection.release();
+    }
     isCycleRunning = false;
   }
 }

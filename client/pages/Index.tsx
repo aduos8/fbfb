@@ -481,7 +481,16 @@ export default function Index() {
       const nextResults = searchData.results;
 
       setTotalResults(searchData.total);
-      setResults({ data: nextResults, type: searchTypeLabelMap[type] });
+      setResults((previous) => {
+        if (type === "message" && page > 1 && previous && previous.type === searchTypeLabelMap[type]) {
+          return {
+            data: [...previous.data, ...nextResults],
+            type: searchTypeLabelMap[type],
+          };
+        }
+
+        return { data: nextResults, type: searchTypeLabelMap[type] };
+      });
       setCurrentPage(page);
       setShowResults(true);
     } catch (error: any) {

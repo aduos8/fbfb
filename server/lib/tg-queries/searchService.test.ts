@@ -85,6 +85,7 @@ const {
   buildMessageContextLink,
   getLookupMessage,
   runChannelSearch,
+  runGroupSearch,
   runMessageSearch,
   runProfileSearch,
 } = await import("./searchService");
@@ -509,6 +510,85 @@ describe("runMessageSearch", () => {
     expect(result.total).toBe(0);
     expect(result.results).toEqual([]);
   });
+
+  it("uses the visible page size instead of inflated backend totals when strict filtering trims most hits", async () => {
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          documentId: "c1_m1",
+          messageId: "m1",
+          chatId: "c1",
+          senderId: "u1",
+          senderUsername: "alice",
+          senderDisplayName: "Alice",
+          chatTitle: "General",
+          chatType: "group",
+          chatUsername: "general",
+          content: "sad",
+          contentCharacterSet: ["s", "a", "d"],
+          hasMedia: false,
+          containsLinks: false,
+          contentLength: 3,
+          bucket: "202403",
+          timestamp: "2024-03-10T12:00:00.000Z",
+          timestampMs: 1710072000000,
+        },
+        {
+          documentId: "c1_m2",
+          messageId: "m2",
+          chatId: "c1",
+          senderId: "u1",
+          senderUsername: "alice",
+          senderDisplayName: "Alice",
+          chatTitle: "General",
+          chatType: "group",
+          chatUsername: "general",
+          content: "so sad",
+          contentCharacterSet: ["s", "a", "d", "o"],
+          hasMedia: false,
+          containsLinks: false,
+          contentLength: 6,
+          bucket: "202403",
+          timestamp: "2024-03-10T12:01:00.000Z",
+          timestampMs: 1710072060000,
+        },
+        {
+          documentId: "c1_m3",
+          messageId: "m3",
+          chatId: "c1",
+          senderId: "u1",
+          senderUsername: "alice",
+          senderDisplayName: "Alice",
+          chatTitle: "General",
+          chatType: "group",
+          chatUsername: "general",
+          content: "hello there",
+          contentCharacterSet: ["h", "e", "l", "o"],
+          hasMedia: false,
+          containsLinks: false,
+          contentLength: 11,
+          bucket: "202403",
+          timestamp: "2024-03-10T12:02:00.000Z",
+          timestampMs: 1710072120000,
+        },
+      ],
+      totalHits: 645458,
+    });
+
+    const result = await runMessageSearch(
+      {
+        type: "message",
+        page: 1,
+        limit: 25,
+        query: "sad",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(result.results).toHaveLength(2);
+    expect(result.total).toBe(2);
+  });
 });
 
 describe("runChannelSearch", () => {
@@ -561,6 +641,53 @@ describe("runChannelSearch", () => {
     );
     expect(result.total).toBe(1);
     expect(result.results[0]?.username).toBe("alpha");
+  });
+
+  it("falls back to indexed search when exact Cassandra chat lookups are unavailable", async () => {
+    queryMocks.getChatById.mockRejectedValueOnce(
+      Object.assign(new Error("All host(s) tried for query failed."), { name: "NoHostAvailableError" })
+    );
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          chatId: "1001",
+          chatType: "channel",
+          username: "alpha",
+          title: "Alpha Channel",
+          description: "indexed fallback",
+          memberCount: 42,
+          participantCount: 42,
+          profilePhoto: null,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-18T20:36:24.540Z",
+          _rankingScore: 1,
+        },
+      ],
+      totalHits: 1,
+    });
+
+    const result = await runChannelSearch(
+      {
+        type: "channel",
+        page: 1,
+        limit: 25,
+        query: "1001",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(searchIndexMocks.searchIndex).toHaveBeenCalledWith(
+      "chats",
+      expect.objectContaining({
+        filters: expect.arrayContaining([
+          { field: "chatType", operator: "eq", value: "channel" },
+          { field: "chatId", operator: "eq", value: "1001" },
+        ]),
+      })
+    );
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramChatId).toBe("1001");
   });
 });
 
@@ -733,5 +860,100 @@ describe("runProfileSearch", () => {
     );
     expect(result.total).toBe(1);
     expect(result.results[0]?.username).toBe("Refundnet");
+  });
+
+  it("falls back to indexed search when exact Cassandra user lookups are unavailable", async () => {
+    queryMocks.getUserById.mockRejectedValueOnce(
+      Object.assign(new Error("All host(s) tried for query failed."), { name: "NoHostAvailableError" })
+    );
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          userId: "1001",
+          username: "alpha",
+          displayName: "Alpha",
+          bio: "indexed fallback",
+          profilePhoto: null,
+          phoneHash: null,
+          phoneMasked: null,
+          createdAt: "2026-04-09T21:53:07.323Z",
+          updatedAt: "2026-04-18T20:36:24.540Z",
+          isTelegramPremium: null,
+          _rankingScore: 1,
+        },
+      ],
+      totalHits: 1,
+    });
+
+    const result = await runProfileSearch(
+      {
+        type: "profile",
+        page: 1,
+        limit: 25,
+        query: "1001",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(searchIndexMocks.searchIndex).toHaveBeenCalledWith(
+      "profiles",
+      expect.objectContaining({
+        filters: expect.arrayContaining([
+          { field: "userId", operator: "eq", value: "1001" },
+        ]),
+      })
+    );
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramUserId).toBe("1001");
+  });
+});
+
+describe("runGroupSearch", () => {
+  it("falls back to indexed search when exact Cassandra group lookups are unavailable", async () => {
+    queryMocks.getChatById.mockRejectedValueOnce(
+      Object.assign(new Error("All host(s) tried for query failed."), { name: "NoHostAvailableError" })
+    );
+    searchIndexMocks.searchIndex.mockResolvedValue({
+      hits: [
+        {
+          chatId: "2002",
+          chatType: "supergroup",
+          username: "alpha-group",
+          title: "Alpha Group",
+          description: "indexed fallback",
+          memberCount: 42,
+          participantCount: 42,
+          profilePhoto: null,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-18T20:36:24.540Z",
+          _rankingScore: 1,
+        },
+      ],
+      totalHits: 1,
+    });
+
+    const result = await runGroupSearch(
+      {
+        type: "group",
+        page: 1,
+        limit: 25,
+        query: "2002",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(searchIndexMocks.searchIndex).toHaveBeenCalledWith(
+      "chats",
+      expect.objectContaining({
+        filters: expect.arrayContaining([
+          { field: "chatType", operator: "in", values: ["group", "supergroup"] },
+          { field: "chatId", operator: "eq", value: "2002" },
+        ]),
+      })
+    );
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramChatId).toBe("2002");
   });
 });
