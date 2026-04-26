@@ -274,7 +274,7 @@ const INDEX_DEFINITIONS: Record<keyof SearchIndexMap, IndexDefinition> = {
         "contentCharacterSet",
       ],
       sortableAttributes: ["timestampMs"],
-      typoTolerance: { enabled: true },
+      typoTolerance: { enabled: false },
       pagination: { maxTotalHits: 900000000 },
     },
     opensearch: {
@@ -772,7 +772,7 @@ function buildOpenSearchMustClause(uid: string, query: string | undefined) {
         query: cleaned,
         fields: definition.searchableAttributes,
         ...(role === "messages" && /\s/.test(cleaned) ? { operator: "and" as const } : {}),
-        fuzziness: "AUTO",
+        ...(role === "messages" ? {} : { fuzziness: "AUTO" }),
       },
     },
   ];

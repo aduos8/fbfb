@@ -419,8 +419,6 @@ export default function Index() {
   const [currentQuery, setCurrentQuery] = useState("");
   const [currentType, setCurrentType] = useState<SearchType>("profile");
   const [currentFilters, setCurrentFilters] = useState<Record<string, string>>({});
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const sentinelRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
   const pageSize = 25;
@@ -481,16 +479,7 @@ export default function Index() {
       const nextResults = searchData.results;
 
       setTotalResults(searchData.total);
-      setResults((previous) => {
-        if (type === "message" && page > 1 && previous && previous.type === searchTypeLabelMap[type]) {
-          return {
-            data: [...previous.data, ...nextResults],
-            type: searchTypeLabelMap[type],
-          };
-        }
-
-        return { data: nextResults, type: searchTypeLabelMap[type] };
-      });
+      setResults({ data: nextResults, type: searchTypeLabelMap[type] });
       setCurrentPage(page);
       setShowResults(true);
     } catch (error: any) {
@@ -518,29 +507,16 @@ export default function Index() {
     }
   }, [toast, pageSize]);
 
-  useEffect(() => {
-    if (!showResults || currentType !== "message" || !sentinelRef.current) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !isLoadingMore && results && results.data.length < totalResults) {
-          setIsLoadingMore(true);
-          void handleSearch(currentQuery, currentType, currentPage + 1, currentFilters);
-        }
-      },
-      { threshold: 0.1, rootMargin: "100px" }
-    );
-
-    observer.observe(sentinelRef.current);
-    return () => observer.disconnect();
-  }, [showResults, currentType, isLoadingMore, results, totalResults, currentQuery, currentPage, currentFilters, handleSearch]);
-
-  useEffect(() => {
-    if (!isLoadingMore) return;
-    setIsLoadingMore(false);
-  }, [results, isLoadingMore]);
-
   const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  const isMessageSearch = currentType === "message";
+  const loadedResultCount = results?.data.length ?? 0;
+  const showingIndexedMatches = isMessageSearch && totalResults > 0;
+  const resultCountLabel = showingIndexedMatches
+    ? `${totalResults.toLocaleString()} indexed match${totalResults !== 1 ? "es" : ""}`
+    : `${totalResults.toLocaleString()} Result${totalResults !== 1 ? "s" : ""}`;
+  const pageSummaryLabel = showingIndexedMatches
+    ? `${loadedResultCount.toLocaleString()} visible on page ${currentPage} of ${totalPages}`
+    : `Showing ${loadedResultCount.toLocaleString()} of ${totalResults.toLocaleString()} results`;
   const handleNavigate = useCallback((path: string, state?: ResultNavigationState) => {
     navigate(path, state ? { state } : undefined);
   }, [navigate]);
@@ -591,7 +567,7 @@ export default function Index() {
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
                     <span className="font-sans font-normal text-[14px] text-white">
-                      {totalResults} Result{totalResults !== 1 ? "s" : ""}
+                      {resultCountLabel}
                     </span>
                     <div className="flex items-center gap-2 px-3 py-1 rounded-[2px] bg-[rgba(17,16,24,0.3)] border border-[rgba(58,42,238,0.3)] backdrop-blur-[16.5px]">
                       <span className="font-sans font-normal text-[8px] text-[#3A2AEE] uppercase">
@@ -644,11 +620,11 @@ export default function Index() {
 
                 <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
                   <span className="font-sans text-[11px] text-white/40">
-                    Showing {results.data.length} of {totalResults.toLocaleString()} results
+                    {pageSummaryLabel}
                   </span>
-                  {currentType === "message" && results.data.length < totalResults && !isLoadingMore && (
+                  {currentPage < totalPages && (
                     <span className="font-sans text-[11px] text-[#3A2AEE]">
-                      Scroll for more
+                      Use Next for more
                     </span>
                   )}
                 </div>

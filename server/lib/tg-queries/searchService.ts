@@ -235,32 +235,6 @@ function getSearchResponseTotal<T extends Record<string, unknown>>(response: {
   return response.estimatedTotalHits ?? response.totalHits ?? response.hits.length;
 }
 
-function resolveVisiblePageTotal(options: {
-  page: number;
-  limit: number;
-  rawHitsCount: number;
-  visibleHitsCount: number;
-  reportedTotal?: number;
-}) {
-  const {
-    page,
-    limit,
-    rawHitsCount,
-    visibleHitsCount,
-    reportedTotal,
-  } = options;
-
-  if (visibleHitsCount === 0) {
-    return 0;
-  }
-
-  if (visibleHitsCount < rawHitsCount) {
-    return Math.max((page - 1) * limit + visibleHitsCount, visibleHitsCount);
-  }
-
-  return reportedTotal ?? visibleHitsCount;
-}
-
 function isCassandraUnavailableError(error: unknown) {
   if (!(error instanceof Error)) {
     return false;
@@ -608,13 +582,7 @@ async function searchProfilesViaIndex(
   const hits = (response.hits as RankedProfileDocument[]).filter((hit) => filterProfileDocument(hit, input));
   return {
     hits,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: response.hits.length,
-      visibleHitsCount: hits.length,
-      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
-    }),
+    total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
   };
 }
 
@@ -641,13 +609,7 @@ async function searchChatsViaIndex(
   const hits = (response.hits as RankedChatDocument[]).filter((hit) => filterChatDocument(hit, input));
   return {
     hits,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: response.hits.length,
-      visibleHitsCount: hits.length,
-      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
-    }),
+    total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
   };
 }
 
@@ -683,13 +645,7 @@ async function searchMessagesViaIndex(
   const hits = (response.hits as RankedMessageDocument[]).filter((hit) => filterMessageDocument(hit, input));
   return {
     hits,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: response.hits.length,
-      visibleHitsCount: hits.length,
-      reportedTotal: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
-    }),
+    total: hits.length > 0 ? (response.estimatedTotalHits ?? response.totalHits ?? hits.length) : 0,
   };
 }
 
@@ -1129,16 +1085,7 @@ export async function runProfileSearch(input: ProfileSearchInput, context: Searc
   const indexedUserIds = indexed.hits.map(h => h.userId);
   const historyMap = indexedUserIds.length > 0 ? await getUserHistoryForBatch(indexedUserIds) : new Map();
   const results = await buildProfileResults(indexed.hits, input, context, historyMap);
-  return {
-    results,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: indexed.hits.length,
-      visibleHitsCount: results.length,
-      reportedTotal: indexed.total,
-    }),
-  };
+  return { results, total: indexed.total };
 }
 
 export async function runChannelSearch(input: ChannelSearchInput, context: SearchContext): Promise<SearchResultPage<ChannelResult>> {
@@ -1179,16 +1126,7 @@ export async function runChannelSearch(input: ChannelSearchInput, context: Searc
 
   const indexed = await searchChatsViaIndex("channel", input);
   const results = await buildChannelResults(indexed.hits, input, context);
-  return {
-    results,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: indexed.hits.length,
-      visibleHitsCount: results.length,
-      reportedTotal: indexed.total,
-    }),
-  };
+  return { results, total: indexed.total };
 }
 
 export async function runGroupSearch(input: GroupSearchInput, context: SearchContext): Promise<SearchResultPage<GroupResult>> {
@@ -1229,31 +1167,13 @@ export async function runGroupSearch(input: GroupSearchInput, context: SearchCon
 
   const indexed = await searchChatsViaIndex("group", input);
   const results = await buildGroupResults(indexed.hits, input, context);
-  return {
-    results,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: indexed.hits.length,
-      visibleHitsCount: results.length,
-      reportedTotal: indexed.total,
-    }),
-  };
+  return { results, total: indexed.total };
 }
 
 export async function runMessageSearch(input: MessageSearchInput, context: SearchContext): Promise<SearchResultPage<MessageResult>> {
   const indexed = await searchMessagesViaIndex(input);
   const results = await buildMessageResults(indexed.hits, input, context);
-  return {
-    results,
-    total: resolveVisiblePageTotal({
-      page: input.page,
-      limit: input.limit,
-      rawHitsCount: indexed.hits.length,
-      visibleHitsCount: results.length,
-      reportedTotal: indexed.total,
-    }),
-  };
+  return { results, total: indexed.total };
 }
 
 export async function getLookupMessage(

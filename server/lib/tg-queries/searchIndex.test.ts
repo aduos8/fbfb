@@ -207,7 +207,6 @@ describe("searchIndex adapter", () => {
                       "chatUsername",
                     ],
                     operator: "and",
-                    fuzziness: "AUTO",
                   },
                 },
               ],
@@ -217,6 +216,42 @@ describe("searchIndex adapter", () => {
         }),
       })
     );
+  });
+
+  it("does not use fuzzy matching for OpenSearch message queries", async () => {
+    process.env.SEARCH_BACKEND = "opensearch";
+    process.env.OPENSEARCH_URL = "http://opensearch:9200";
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          took: 3,
+          hits: {
+            total: { value: 2, relation: "eq" },
+            hits: [],
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const { searchIndex } = await import("./searchIndex");
+    await searchIndex("messages", {
+      q: "sad",
+      page: 1,
+      hitsPerPage: 25,
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.query.bool.must[0].multi_match).toEqual({
+      query: "sad",
+      fields: [
+        "content",
+        "senderUsername",
+        "senderDisplayName",
+        "chatTitle",
+        "chatUsername",
+      ],
+    });
   });
 
   it("uses wildcard matching for short OpenSearch profile queries", async () => {

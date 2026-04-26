@@ -511,7 +511,7 @@ describe("runMessageSearch", () => {
     expect(result.results).toEqual([]);
   });
 
-  it("uses the visible page size instead of inflated backend totals when strict filtering trims most hits", async () => {
+  it("preserves backend totals for pagination when strict filtering trims the current page", async () => {
     searchIndexMocks.searchIndex.mockResolvedValue({
       hits: [
         {
@@ -587,7 +587,7 @@ describe("runMessageSearch", () => {
     );
 
     expect(result.results).toHaveLength(2);
-    expect(result.total).toBe(2);
+    expect(result.total).toBe(645458);
   });
 });
 
