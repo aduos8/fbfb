@@ -296,7 +296,17 @@ export const lookupRouter = router({
       const searchCtx = await buildViewer(ctx);
       const canAccessMessages = await canUseMessageSearch(searchCtx.viewer.userId, ctx.userRole);
       if (!canAccessMessages) {
-        return { items: [], nextCursor: null };
+        return { items: [], nextCursor: null, unavailableReason: "message_access_required" as const };
+      }
+
+      const userRedaction = await loadSingleRedaction("user", input.userId);
+      const userRedactedFields = new Set(userRedaction?.fields ?? []);
+      const messagesRedacted =
+        (userRedaction?.type === "full" || userRedaction?.type === "masked" || userRedactedFields.has("messages"))
+        && !searchCtx.viewer.canBypassRedactions;
+
+      if (messagesRedacted) {
+        return { items: [], nextCursor: null, unavailableReason: "redacted" as const };
       }
 
       const offset = parseCursor(input.cursor);

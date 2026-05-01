@@ -235,6 +235,7 @@ export type LookupMessage = z.infer<typeof LookupMessageSchema>;
 export const LookupMessagesResponseSchema = z.object({
   items: z.array(LookupMessageSchema),
   nextCursor: z.string().nullable(),
+  unavailableReason: z.enum(["message_access_required", "redacted"]).optional(),
 });
 export type LookupMessagesResponse = z.infer<typeof LookupMessagesResponseSchema>;
 

@@ -353,7 +353,7 @@ export async function getMessageByChatBucketTimestamp(
 export async function listMessagesByChatBucket(chatId: number | string, bucket: string, limit = 100): Promise<MessageRecord[]> {
   const client = getClient();
   const result = await client.execute(
-    "SELECT * FROM messages_by_chat WHERE chat_id = ? AND bucket = ? LIMIT ?",
+    "SELECT * FROM messages_by_chat WHERE chat_id = ? AND bucket = ? ORDER BY timestamp DESC LIMIT ?",
     [String(chatId), bucket, limit],
     { prepare: true }
   );
@@ -363,7 +363,7 @@ export async function listMessagesByChatBucket(chatId: number | string, bucket: 
 export async function listMessagesByUserBucket(userId: number | string, bucket: string, limit = 100): Promise<MessageRecord[]> {
   const client = getClient();
   const result = await client.execute(
-    "SELECT * FROM messages_by_user WHERE user_id = ? AND bucket = ? LIMIT ?",
+    "SELECT * FROM messages_by_user WHERE user_id = ? AND bucket = ? ORDER BY timestamp DESC LIMIT ?",
     [String(userId), bucket, limit],
     { prepare: true }
   );

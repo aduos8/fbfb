@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import type { ChatActivityEntry, LookupUser, TrackingRecord, UserAnalytics, UserHistoryResponse } from "@shared/api";
+import type { ChatActivityEntry, LookupMessage, LookupMessagesResponse, LookupUser, TrackingRecord, UserAnalytics, UserHistoryResponse } from "@shared/api";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 
@@ -15,17 +16,24 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 function HistorySection({
   title,
   entries,
+  initialVisibleCount = 20,
 }: {
   title: string;
   entries: UserHistoryResponse["displayNameHistory"];
+  initialVisibleCount?: number;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (entries.length === 0) return null;
+
+  const hasMore = entries.length > initialVisibleCount;
+  const visibleEntries = expanded ? entries : entries.slice(0, initialVisibleCount);
 
   return (
     <div className="rounded-[10px] p-5" style={{ background: "rgba(17,16,24,0.5)", border: "1px solid rgba(58,42,238,0.12)" }}>
       <h2 className="font-sans font-semibold text-[14px] text-white mb-4">{title}</h2>
       <div className="space-y-2">
-        {entries.slice(0, 20).map((entry, index) => (
+        {visibleEntries.map((entry, index) => (
           <div key={`${title}-${index}`} className="flex items-center gap-3 text-[12px]">
             <span className="text-white/40 font-mono truncate flex-1 max-w-[160px]">{entry.oldValue || "(none)"}</span>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-[#3A2AEE] flex-shrink-0">
@@ -38,6 +46,15 @@ function HistorySection({
           </div>
         ))}
       </div>
+      {hasMore && !expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-4 w-full rounded-[8px] border border-white/10 bg-white/[0.03] px-3 py-2 font-sans text-[12px] text-white/65 transition-colors hover:bg-white/[0.06] hover:text-white"
+        >
+          See more
+        </button>
+      )}
     </div>
   );
 }
@@ -68,6 +85,83 @@ function ChatListSection({ title, chats }: { title: string; chats: ChatActivityE
   );
 }
 
+function formatMessageDate(timestamp: string | null) {
+  if (!timestamp) return "Unknown time";
+  return new Date(timestamp).toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function LastMessagesSection({
+  response,
+  isLoading,
+}: {
+  response: LookupMessagesResponse | undefined;
+  isLoading: boolean;
+}) {
+  const messages: LookupMessage[] = response?.items ?? [];
+  const unavailableReason = response?.unavailableReason;
+  const lockedCopy = unavailableReason === "message_access_required"
+    ? "Message history requires a Pro/Enterprise plan or the Message History add-on."
+    : unavailableReason === "redacted"
+      ? "Messages for this profile are redacted."
+      : null;
+
+  return (
+    <div className="rounded-[10px] p-4" style={{ background: "rgba(17,16,24,0.5)", border: "1px solid rgba(58,42,238,0.12)" }}>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="font-sans font-semibold text-[14px] text-white">Last 10 Messages</h2>
+        <span className="font-mono text-[10px] text-white/30">{messages.length}/10</span>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-10">
+          <div className="w-6 h-6 border-2 border-[#3A2AEE] border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {!isLoading && lockedCopy && (
+        <div className="rounded-[8px] border border-[#fbbf24]/20 bg-[#fbbf24]/[0.06] p-4">
+          <p className="font-sans text-[12px] text-[#fbbf24]">{lockedCopy}</p>
+        </div>
+      )}
+
+      {!isLoading && !lockedCopy && messages.length === 0 && (
+        <div className="rounded-[8px] border border-white/10 bg-white/[0.03] p-4">
+          <p className="font-sans text-[12px] text-white/45">No recent messages found for this user.</p>
+        </div>
+      )}
+
+      {!isLoading && !lockedCopy && messages.length > 0 && (
+        <div className="space-y-2">
+          {messages.map((message) => (
+            <Link
+              key={`${message.chatId}-${message.messageId}`}
+              to={message.contextLink}
+              className="block rounded-[8px] border border-white/5 bg-white/[0.025] px-3 py-2.5 transition-colors hover:border-[#3A2AEE]/30 hover:bg-[#3A2AEE]/[0.07]"
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="min-w-0 truncate font-sans text-[12px] text-white/70">
+                  {message.chat.title || message.chat.username || message.chatId}
+                </p>
+                <span className="shrink-0 font-sans text-[10px] text-white/30">
+                  {formatMessageDate(message.timestamp)}
+                </span>
+              </div>
+              <p className="line-clamp-2 font-sans text-[12px] leading-5 text-white/50">
+                {message.content}
+              </p>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ProfileLookup() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -83,6 +177,10 @@ export default function ProfileLookup() {
   );
   const { data: history } = trpc.lookup.getUserHistory.useQuery(
     { userId: id! },
+    { enabled: !!id }
+  );
+  const { data: recentMessages, isLoading: recentMessagesLoading } = trpc.lookup.getUserMessages.useQuery(
+    { userId: id!, limit: 10 },
     { enabled: !!id }
   );
   const { data: trackingState } = trpc.tracking.checkTracking.useQuery(
@@ -293,9 +391,9 @@ export default function ProfileLookup() {
 
               {historyData && (
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <HistorySection title="Display Name History" entries={historyData.displayNameHistory} />
+                  <HistorySection title="Display Name History" entries={historyData.displayNameHistory} initialVisibleCount={5} />
                   <HistorySection title="Username History" entries={historyData.usernameHistory} />
-                  <HistorySection title="Bio History" entries={historyData.bioHistory} />
+                  <HistorySection title="Bio History" entries={historyData.bioHistory} initialVisibleCount={5} />
                   <HistorySection title="Phone History" entries={historyData.phoneHistory} />
                 </div>
               )}
@@ -303,6 +401,10 @@ export default function ProfileLookup() {
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                 <ChatListSection title="Active Chats" chats={analyticsData?.activeChats || []} />
                 <ChatListSection title="Groups" chats={analyticsData?.groups || []} />
+                <LastMessagesSection response={recentMessages as LookupMessagesResponse | undefined} isLoading={recentMessagesLoading} />
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                 <ChatListSection title="Channels" chats={analyticsData?.channels || []} />
               </div>
             </div>

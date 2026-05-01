@@ -99,7 +99,7 @@ export default function AdminLayout() {
         <div className="flex px-6 sm:px-10 lg:px-14 xl:px-20 py-6 gap-6">
           <div
             ref={sidebarRef}
-            className="hidden md:flex flex-col rounded-[14px] overflow-hidden shrink-0 w-[220px]"
+            className="hidden md:flex flex-col self-start rounded-[14px] overflow-hidden shrink-0 w-[220px] max-h-[calc(100vh-160px)]"
             style={{ background: "rgba(17,16,24,0.8)", border: "1px solid rgba(58,42,238,0.15)" }}
           >
             <SidebarContent />

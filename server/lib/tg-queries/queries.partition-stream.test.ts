@@ -82,4 +82,20 @@ describe("partitioned Cassandra message streams", () => {
     resolveSecond?.({ rows: [], pageState: null });
     await drain;
   });
+
+  it("reads bucketed user and chat messages newest first", async () => {
+    executeMock.mockResolvedValue({ rows: [], pageState: null });
+
+    const { listMessagesByChatBucket, listMessagesByUserBucket } = await import("./queries");
+
+    await listMessagesByUserBucket("u1", "202605", 10);
+    await listMessagesByChatBucket("c1", "202605", 10);
+
+    expect(executeMock.mock.calls[0]?.[0]).toContain("FROM messages_by_user");
+    expect(executeMock.mock.calls[0]?.[0]).toContain("ORDER BY timestamp DESC");
+    expect(executeMock.mock.calls[0]?.[1]).toEqual(["u1", "202605", 10]);
+    expect(executeMock.mock.calls[1]?.[0]).toContain("FROM messages_by_chat");
+    expect(executeMock.mock.calls[1]?.[0]).toContain("ORDER BY timestamp DESC");
+    expect(executeMock.mock.calls[1]?.[1]).toEqual(["c1", "202605", 10]);
+  });
 });

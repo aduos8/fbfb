@@ -62,12 +62,15 @@
 
   html {
     scroll-behavior: smooth;
+    scrollbar-gutter: stable;
+    overflow-y: scroll;
   }
 
   body {
     @apply bg-[#0F0F11] text-white font-sans;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
   }
 
   :where(p, span, li, h1, h2, h3, h4, h5, h6, a, button, label, td, th) {
