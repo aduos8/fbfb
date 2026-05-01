@@ -141,6 +141,7 @@ function LastMessagesSection({
             <Link
               key={`${message.chatId}-${message.messageId}`}
               to={message.contextLink}
+              state={{ prefetchedMessage: message }}
               className="block rounded-[8px] border border-white/5 bg-white/[0.025] px-3 py-2.5 transition-colors hover:border-[#3A2AEE]/30 hover:bg-[#3A2AEE]/[0.07]"
             >
               <div className="mb-1 flex items-center justify-between gap-2">
@@ -150,6 +151,14 @@ function LastMessagesSection({
                 <span className="shrink-0 font-sans text-[10px] text-white/30">
                   {formatMessageDate(message.timestamp)}
                 </span>
+              </div>
+              <div className="mb-1 flex items-center gap-2 text-[10px]">
+                <span className="truncate text-[#B8A8FF]">
+                  {message.sender.username ? `@${message.sender.username}` : message.sender.displayName || message.sender.userId || "Unknown sender"}
+                </span>
+                {message.redaction.applied && (
+                  <span className="shrink-0 uppercase tracking-[0.18em] text-[#ff8a8a]">redacted</span>
+                )}
               </div>
               <p className="line-clamp-2 font-sans text-[12px] leading-5 text-white/50">
                 {message.content}

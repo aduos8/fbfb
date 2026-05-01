@@ -17,6 +17,9 @@ import {
   getUserByUsername,
   getUserHistoryForBatch,
   listChatsByIds,
+  searchChats,
+  searchMessages,
+  searchUsers,
   formatMessageBucket,
 } from "./queries";
 import { hashPhoneNumber } from "./phone";
@@ -586,6 +589,22 @@ async function searchProfilesViaIndex(
   };
 }
 
+function toRankedProfileDocument(user: Awaited<ReturnType<typeof searchUsers>>["results"][number]): RankedProfileDocument {
+  return {
+    userId: user.user_id,
+    username: user.username ?? null,
+    displayName: user.display_name ?? null,
+    bio: user.bio ?? null,
+    profilePhoto: user.avatar_url ?? null,
+    phoneHash: user.phone_hash ?? null,
+    phoneMasked: user.phone_masked ?? null,
+    createdAt: serializeDate(user.created_at),
+    updatedAt: serializeDate(user.updated_at),
+    isTelegramPremium: user.is_premium ?? null,
+    _rankingScore: 1,
+  };
+}
+
 async function searchChatsViaIndex(
   kind: "channel" | "group",
   input: ChannelSearchInput | GroupSearchInput
@@ -610,6 +629,22 @@ async function searchChatsViaIndex(
   return {
     hits,
     total: response.estimatedTotalHits ?? response.totalHits ?? hits.length,
+  };
+}
+
+function toRankedChatDocument(chat: Awaited<ReturnType<typeof searchChats>>["results"][number]): RankedChatDocument {
+  return {
+    chatId: chat.chat_id,
+    chatType: chat.chat_type ?? null,
+    username: chat.username ?? null,
+    title: chat.display_name ?? null,
+    description: chat.bio ?? null,
+    memberCount: chat.member_count ?? null,
+    participantCount: chat.participants_count ?? null,
+    profilePhoto: chat.avatar_url ?? null,
+    createdAt: serializeDate(chat.created_at),
+    updatedAt: serializeDate(chat.updated_at),
+    _rankingScore: 1,
   };
 }
 
@@ -647,6 +682,53 @@ async function searchMessagesViaIndex(
     hits,
     total: hits.length > 0 ? (response.estimatedTotalHits ?? response.totalHits ?? hits.length) : 0,
   };
+}
+
+async function buildRankedMessageDocumentsFromCassandra(messages: Awaited<ReturnType<typeof searchMessages>>): Promise<RankedMessageDocument[]> {
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const uniqueChatIds = Array.from(new Set(messages.map((message) => String(message.chat_id))));
+  const uniqueSenderIds = Array.from(
+    new Set(messages.map((message) => message.user_id).filter((value): value is string => Boolean(value)))
+  );
+
+  const [chatRecords, senderPairs] = await Promise.all([
+    listChatsByIds(uniqueChatIds),
+    Promise.all(uniqueSenderIds.map(async (userId) => [userId, await getUserById(userId)] as const)),
+  ]);
+
+  const chatMap = new Map(chatRecords.map((chat) => [chat.chat_id, chat]));
+  const senderMap = new Map(senderPairs);
+
+  return messages.map((message) => {
+    const chat = chatMap.get(String(message.chat_id));
+    const sender = message.user_id ? senderMap.get(message.user_id) : null;
+    const timestamp = serializeDate(message.timestamp ?? message.created_at);
+    const content = String(message.content ?? "");
+
+    return {
+      documentId: `${String(message.chat_id)}_${String(message.message_id)}`,
+      messageId: String(message.message_id),
+      chatId: String(message.chat_id),
+      senderId: message.user_id ?? null,
+      senderUsername: sender?.username ?? null,
+      senderDisplayName: sender?.display_name ?? null,
+      chatTitle: chat?.display_name ?? null,
+      chatType: chat?.chat_type ?? null,
+      chatUsername: chat?.username ?? null,
+      content,
+      contentCharacterSet: buildContentCharacterSet(content),
+      hasMedia: message.has_media ?? Boolean(message.media_type || message.media_url),
+      containsLinks: containsLink(content),
+      contentLength: content.length,
+      bucket: message.bucket ?? formatMessageBucket(message.timestamp ?? message.created_at),
+      timestamp,
+      timestampMs: timestamp ? numericDate(timestamp) : null,
+      _rankingScore: 1,
+    };
+  });
 }
 
 async function buildProfileResults(
@@ -1082,6 +1164,13 @@ export async function runProfileSearch(input: ProfileSearchInput, context: Searc
   }
 
   const indexed = await searchProfilesViaIndex(input);
+  if (indexed.total === 0) {
+    const cassandra = await searchUsers(cleanSearchValue(input.query) ?? "", input.limit, (input.page - 1) * input.limit);
+    const hits = cassandra.results.map(toRankedProfileDocument).filter((hit) => filterProfileDocument(hit, input));
+    const historyMap = hits.length > 0 ? await getUserHistoryForBatch(hits.map((hit) => hit.userId)) : new Map();
+    const results = await buildProfileResults(hits, input, context, historyMap);
+    return { results, total: hits.length > 0 ? results.length : cassandra.total };
+  }
   const indexedUserIds = indexed.hits.map(h => h.userId);
   const historyMap = indexedUserIds.length > 0 ? await getUserHistoryForBatch(indexedUserIds) : new Map();
   const results = await buildProfileResults(indexed.hits, input, context, historyMap);
@@ -1125,6 +1214,12 @@ export async function runChannelSearch(input: ChannelSearchInput, context: Searc
   }
 
   const indexed = await searchChatsViaIndex("channel", input);
+  if (indexed.total === 0) {
+    const cassandra = await searchChats(cleanSearchValue(input.query) ?? "", "channel", input.limit, (input.page - 1) * input.limit);
+    const hits = cassandra.results.map(toRankedChatDocument).filter((hit) => filterChatDocument(hit, input));
+    const results = await buildChannelResults(hits, input, context);
+    return { results, total: hits.length > 0 ? results.length : cassandra.total };
+  }
   const results = await buildChannelResults(indexed.hits, input, context);
   return { results, total: indexed.total };
 }
@@ -1166,12 +1261,32 @@ export async function runGroupSearch(input: GroupSearchInput, context: SearchCon
   }
 
   const indexed = await searchChatsViaIndex("group", input);
+  if (indexed.total === 0) {
+    const cassandra = await searchChats(cleanSearchValue(input.query) ?? "", undefined, input.limit, (input.page - 1) * input.limit);
+    const hits = cassandra.results
+      .map(toRankedChatDocument)
+      .filter((hit) => ["group", "supergroup"].includes(hit.chatType ?? ""))
+      .filter((hit) => filterChatDocument(hit, input));
+    const results = await buildGroupResults(hits, input, context);
+    return { results, total: hits.length > 0 ? results.length : cassandra.total };
+  }
   const results = await buildGroupResults(indexed.hits, input, context);
   return { results, total: indexed.total };
 }
 
 export async function runMessageSearch(input: MessageSearchInput, context: SearchContext): Promise<SearchResultPage<MessageResult>> {
   const indexed = await searchMessagesViaIndex(input);
+  if (indexed.total === 0) {
+    const keyword = cleanSearchValue(input.filters.keyword ?? input.query) ?? "";
+    if (keyword) {
+      const cassandraMessages = await searchMessages(keyword, Math.max(input.limit * input.page, input.limit));
+      const hits = (await buildRankedMessageDocumentsFromCassandra(cassandraMessages)).filter((hit) => filterMessageDocument(hit, input));
+      const pageStart = (input.page - 1) * input.limit;
+      const pagedHits = hits.slice(pageStart, pageStart + input.limit);
+      const results = await buildMessageResults(pagedHits, input, context);
+      return { results, total: hits.length };
+    }
+  }
   const results = await buildMessageResults(indexed.hits, input, context);
   return { results, total: indexed.total };
 }

@@ -12,6 +12,9 @@ const queryMocks = vi.hoisted(() => ({
   getUserByUsername: vi.fn(),
   getUserHistoryForBatch: vi.fn(),
   listChatsByIds: vi.fn(),
+  searchChats: vi.fn(),
+  searchMessages: vi.fn(),
+  searchUsers: vi.fn(),
   formatMessageBucket: vi.fn((value: Date | string | null | undefined) => {
     if (!value) {
       return null;
@@ -61,6 +64,9 @@ vi.mock("./queries", () => ({
   getUserByUsername: queryMocks.getUserByUsername,
   getUserHistoryForBatch: queryMocks.getUserHistoryForBatch,
   listChatsByIds: queryMocks.listChatsByIds,
+  searchChats: queryMocks.searchChats,
+  searchMessages: queryMocks.searchMessages,
+  searchUsers: queryMocks.searchUsers,
   formatMessageBucket: queryMocks.formatMessageBucket,
 }));
 
@@ -109,6 +115,9 @@ beforeEach(() => {
   queryMocks.getUserByUsername.mockResolvedValue(null);
   queryMocks.getUserHistoryForBatch.mockResolvedValue(new Map());
   queryMocks.listChatsByIds.mockResolvedValue([]);
+  queryMocks.searchChats.mockResolvedValue({ results: [], total: 0 });
+  queryMocks.searchMessages.mockResolvedValue([]);
+  queryMocks.searchUsers.mockResolvedValue({ results: [], total: 0 });
   redactionMocks.loadRedactionMap.mockResolvedValue(new Map());
   searchIndexMocks.configureSearchIndices.mockResolvedValue(undefined);
   searchIndexMocks.getSearchBackend.mockReturnValue("opensearch");
@@ -214,6 +223,53 @@ describe("runMessageSearch", () => {
     );
     expect(result.total).toBe(1);
     expect(result.results[0]?.snippet).toContain("shadow");
+  });
+
+  it("falls back to Cassandra when OpenSearch returns no message hits", async () => {
+    searchIndexMocks.searchIndex
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      })
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      });
+    queryMocks.searchMessages.mockResolvedValue([
+      {
+        chat_id: "c1",
+        message_id: "m9",
+        user_id: "u1",
+        content: "hello from cassandra fallback",
+        has_media: false,
+        bucket: "202403",
+        timestamp: new Date("2024-03-10T12:00:00.000Z"),
+      },
+    ]);
+    queryMocks.listChatsByIds.mockResolvedValue([
+      {
+        chat_id: "c1",
+        chat_type: "group",
+        display_name: "General",
+        username: "general",
+      },
+    ]);
+
+    const result = await runMessageSearch(
+      {
+        type: "message",
+        page: 1,
+        limit: 25,
+        query: "hello",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(queryMocks.searchMessages).toHaveBeenCalledWith("hello", 25);
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.messageId).toBe("m9");
+    expect(result.results[0]?.snippet).toContain("cassandra");
   });
 
   it("uses exact character filters for single-character content searches", async () => {
@@ -689,6 +745,50 @@ describe("runChannelSearch", () => {
     expect(result.total).toBe(1);
     expect(result.results[0]?.telegramChatId).toBe("1001");
   });
+
+  it("falls back to Cassandra when OpenSearch returns no channel hits", async () => {
+    searchIndexMocks.searchIndex
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      })
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      });
+    queryMocks.searchChats.mockResolvedValue({
+      results: [
+        {
+          chat_id: "c55",
+          chat_type: "channel",
+          username: "alpha",
+          display_name: "Alpha Channel",
+          bio: "from cassandra",
+          member_count: 42,
+          participants_count: 42,
+          avatar_url: null,
+          created_at: new Date("2026-04-01T00:00:00.000Z"),
+          updated_at: new Date("2026-04-18T20:36:24.540Z"),
+        },
+      ],
+      total: 1,
+    });
+
+    const result = await runChannelSearch(
+      {
+        type: "channel",
+        page: 1,
+        limit: 25,
+        query: "alpha",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(queryMocks.searchChats).toHaveBeenCalledWith("alpha", "channel", 25, 0);
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramChatId).toBe("c55");
+  });
 });
 
 describe("runProfileSearch", () => {
@@ -907,6 +1007,50 @@ describe("runProfileSearch", () => {
     expect(result.total).toBe(1);
     expect(result.results[0]?.telegramUserId).toBe("1001");
   });
+
+  it("falls back to Cassandra when OpenSearch returns no profile hits", async () => {
+    searchIndexMocks.searchIndex
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      })
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      });
+    queryMocks.searchUsers.mockResolvedValue({
+      results: [
+        {
+          user_id: "u55",
+          username: "alpha",
+          display_name: "Alpha",
+          bio: "from cassandra",
+          avatar_url: null,
+          phone_hash: null,
+          phone_masked: null,
+          is_premium: null,
+          created_at: new Date("2026-04-09T21:53:07.323Z"),
+          updated_at: new Date("2026-04-18T20:36:24.540Z"),
+        },
+      ],
+      total: 1,
+    });
+
+    const result = await runProfileSearch(
+      {
+        type: "profile",
+        page: 1,
+        limit: 25,
+        query: "alpha",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(queryMocks.searchUsers).toHaveBeenCalledWith("alpha", 25, 0);
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramUserId).toBe("u55");
+  });
 });
 
 describe("runGroupSearch", () => {
@@ -955,5 +1099,49 @@ describe("runGroupSearch", () => {
     );
     expect(result.total).toBe(1);
     expect(result.results[0]?.telegramChatId).toBe("2002");
+  });
+
+  it("falls back to Cassandra when OpenSearch returns no group hits", async () => {
+    searchIndexMocks.searchIndex
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      })
+      .mockResolvedValueOnce({
+        hits: [],
+        totalHits: 0,
+      });
+    queryMocks.searchChats.mockResolvedValue({
+      results: [
+        {
+          chat_id: "g55",
+          chat_type: "group",
+          username: "alpha_group",
+          display_name: "Alpha Group",
+          bio: "from cassandra",
+          member_count: 42,
+          participants_count: 20,
+          avatar_url: null,
+          created_at: new Date("2026-04-01T00:00:00.000Z"),
+          updated_at: new Date("2026-04-18T20:36:24.540Z"),
+        },
+      ],
+      total: 1,
+    });
+
+    const result = await runGroupSearch(
+      {
+        type: "group",
+        page: 1,
+        limit: 25,
+        query: "alpha",
+        filters: {},
+      },
+      { viewer: { userId: "viewer-1", canBypassRedactions: false } } as any
+    );
+
+    expect(queryMocks.searchChats).toHaveBeenCalledWith("alpha", undefined, 25, 0);
+    expect(result.total).toBe(1);
+    expect(result.results[0]?.telegramChatId).toBe("g55");
   });
 });

@@ -224,6 +224,8 @@ export const LookupMessageSchema = z.object({
   content: z.string(),
   highlightedSnippet: z.string(),
   hasMedia: z.boolean().nullable(),
+  mediaType: z.string().nullable().optional(),
+  mediaUrl: z.string().nullable().optional(),
   containsLinks: z.boolean().nullable(),
   sender: MessageSenderSchema,
   chat: MessageChatSchema,

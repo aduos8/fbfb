@@ -78,6 +78,14 @@ export default function MessageLookup() {
 
           {message && !isLoading && (
             <div className="space-y-6">
+              {isPreviewOnly && (
+                <div className="rounded-[12px] border border-[#fbbf24]/20 bg-[#fbbf24]/[0.06] p-4">
+                  <p className="font-sans text-[12px] text-[#fbbf24]">
+                    Showing the saved preview for this message. The exact row could not be reopened, but the latest captured context is still available.
+                  </p>
+                </div>
+              )}
+
               <div className="card-border-gradient rounded-[20px] p-6 md:p-8">
                 <div className="flex items-center gap-3 flex-wrap mb-4">
                   <span className="px-2 py-1 rounded text-[10px] font-medium bg-[rgba(58,42,238,0.2)] text-[#B8A8FF] uppercase">

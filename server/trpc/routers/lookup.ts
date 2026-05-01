@@ -14,11 +14,17 @@ import {
   getUserByUsername,
   getUserHistory,
   getUserHistoryForBatch,
+  getParticipationMetaByUser,
   getParticipationByUser,
   listChatsByIds,
   listMessagesByChatBucket,
+  listMessagesByChatBucketForUser,
+  listMessagesByIdForUser,
   listMessagesByUserBucket,
+  formatMessageBucket,
   type HistoryRecordLight,
+  type MessageRecord,
+  type ParticipationMetaRecord,
 } from "../../lib/tg-queries/queries";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
 import { canUseMessageSearch, canUseProfileFullAccess, getViewerAccess } from "../../lib/tg-queries/viewer";
@@ -28,18 +34,66 @@ import { getTrackingByProfile } from "../../lib/db/tracking";
 import { maskPhoneNumber } from "../../lib/tg-queries/phone";
 import { getLookupMessage } from "../../lib/tg-queries/searchService";
 
-function currentBucket() {
-  const now = new Date();
-  return `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
 function buildRecentBuckets(monthsBack: number = 12) {
   const buckets: string[] = [];
   const now = new Date();
   for (let offset = 0; offset < monthsBack; offset += 1) {
     const point = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
-    buckets.push(`${point.getUTCFullYear()}${String(point.getUTCMonth() + 1).padStart(2, "0")}`);
+    buckets.push(`${point.getUTCFullYear()}-${String(point.getUTCMonth() + 1).padStart(2, "0")}`);
   }
+  return buckets;
+}
+
+function buildAllBucketsDescending(startYear = 2013, startMonth = 1) {
+  const buckets: string[] = [];
+  const now = new Date();
+  const cursor = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const stop = new Date(Date.UTC(startYear, startMonth - 1, 1));
+
+  while (cursor >= stop) {
+    buckets.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`);
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+  }
+
+  return buckets;
+}
+
+function parseBucketParts(bucket: string) {
+  const match = bucket.match(/^(\d{4})-?(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    year: Number(match[1]),
+    monthIndex: Number(match[2]) - 1,
+  };
+}
+
+function buildBucketsBetweenDescending(start: Date | string | null | undefined, end: Date | string | null | undefined) {
+  const startBucket = formatMessageBucket(start);
+  const endBucket = formatMessageBucket(end);
+  if (!startBucket && !endBucket) {
+    return [];
+  }
+
+  const first = startBucket ?? endBucket!;
+  const last = endBucket ?? startBucket!;
+  const firstParts = parseBucketParts(first);
+  const lastParts = parseBucketParts(last);
+  if (!firstParts || !lastParts) {
+    return [];
+  }
+
+  const cursor = new Date(Date.UTC(lastParts.year, lastParts.monthIndex, 1));
+  const stop = new Date(Date.UTC(firstParts.year, firstParts.monthIndex, 1));
+  const buckets: string[] = [];
+
+  while (cursor >= stop) {
+    buckets.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`);
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+  }
+
   return buckets;
 }
 
@@ -50,6 +104,111 @@ function parseCursor(cursor: string | undefined | null) {
 
 async function buildViewer(ctx: { userId?: string | null; userRole?: string | null }) {
   return { viewer: await getViewerAccess({ userId: ctx.userId, role: ctx.userRole }) };
+}
+
+function buildMessageContextLink(message: MessageRecord, timestamp: string | null) {
+  const chatId = String(message.chat_id);
+  const messageId = String(message.message_id);
+  const params = new URLSearchParams();
+  const bucket = message.bucket ?? formatMessageBucket(timestamp);
+  if (bucket) params.set("bucket", String(bucket));
+  if (timestamp) params.set("timestamp", timestamp);
+  const query = params.toString();
+  return query ? `/lookup/message/${chatId}/${messageId}?${query}` : `/lookup/message/${chatId}/${messageId}`;
+}
+
+function messageRowKey(message: MessageRecord) {
+  return `${String(message.chat_id)}:${String(message.message_id)}`;
+}
+
+function hasMessageTextContent(message: MessageRecord) {
+  return String(message.content ?? "").trim().length > 0;
+}
+
+function appendUniqueMessageRows(target: MessageRecord[], seen: Set<string>, rows: MessageRecord[]) {
+  let added = 0;
+  for (const row of rows) {
+    if (!hasMessageTextContent(row)) {
+      continue;
+    }
+    const key = messageRowKey(row);
+    if (!seen.has(key)) {
+      seen.add(key);
+      target.push(row);
+      added += 1;
+    }
+  }
+  return added;
+}
+
+function sortMessagesNewestFirst(rows: MessageRecord[]) {
+  return rows.sort((a, b) => {
+    const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
+function getBucketsForParticipation(meta: ParticipationMetaRecord, explicitBucket: string | undefined, fallbackBuckets: string[]) {
+  if (explicitBucket) {
+    return [explicitBucket];
+  }
+
+  const historicalBuckets = buildBucketsBetweenDescending(
+    meta.first_message_at ?? meta.last_message_at,
+    meta.last_message_at ?? meta.first_message_at
+  );
+
+  return historicalBuckets.length > 0 ? historicalBuckets : fallbackBuckets;
+}
+
+function logUserMessageFallbackFailure(source: "messages_by_chat" | "messages_by_id", userId: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`[lookup.getUserMessages] supplemental ${source} lookup failed for user ${userId}: ${message}`);
+}
+
+async function buildLookupMessageFromUserRow(
+  message: MessageRecord,
+  searchCtx: Awaited<ReturnType<typeof buildViewer>>
+): Promise<z.infer<typeof LookupMessageSchema>> {
+  const chatId = String(message.chat_id);
+  const messageId = String(message.message_id);
+  const timestamp = message.timestamp ? new Date(message.timestamp).toISOString() : null;
+  const chat = await getChatById(chatId);
+  const targetType = chat?.chat_type === "channel" ? "channel" : "group";
+  const chatRedaction = chat ? await loadSingleRedaction(targetType, chatId) : null;
+  const redactedFields = new Set(chatRedaction?.fields ?? []);
+  const hideMessage =
+    (chatRedaction?.type === "full" || chatRedaction?.type === "masked" || redactedFields.has("messages"))
+    && !searchCtx.viewer.canBypassRedactions;
+  const content = hideMessage ? "[redacted]" : String(message.content ?? "");
+
+  return {
+    messageId,
+    chatId,
+    timestamp,
+    content,
+    highlightedSnippet: content,
+    hasMedia: message.has_media ?? Boolean(message.media_type || message.media_url),
+    containsLinks: /https?:\/\/|www\./i.test(content),
+    sender: {
+      userId: message.user_id ?? null,
+      username: null,
+      displayName: null,
+    },
+    chat: {
+      chatId,
+      title: chatRedaction?.type === "masked" && !searchCtx.viewer.canBypassRedactions
+        ? "Record unavailable"
+        : chat?.display_name ?? null,
+      type: chat?.chat_type ?? null,
+      username: redactedFields.has("username") && !searchCtx.viewer.canBypassRedactions
+        ? null
+        : chat?.username ?? null,
+    },
+    contextLink: buildMessageContextLink(message, timestamp),
+    redaction: buildRedactionMetadata(chatRedaction),
+  };
 }
 
 function maskHistoryValue(field: string, value: string | null | undefined) {
@@ -310,27 +469,69 @@ export const lookupRouter = router({
       }
 
       const offset = parseCursor(input.cursor);
-      const buckets = input.bucket ? [input.bucket] : buildRecentBuckets(12);
+      const buckets = input.bucket ? [input.bucket] : buildAllBucketsDescending();
       const targetCount = Math.min(200, offset + input.limit + 1);
-      const rows: Awaited<ReturnType<typeof listMessagesByUserBucket>> = [];
+      const rows: MessageRecord[] = [];
+      const seenRows = new Set<string>();
+      let userSourceCount = 0;
 
       for (const bucket of buckets) {
-        if (rows.length >= targetCount) break;
-        const chunk = await listMessagesByUserBucket(input.userId, bucket, targetCount - rows.length);
+        if (userSourceCount >= targetCount) break;
+        const chunk = await listMessagesByUserBucket(input.userId, bucket, targetCount - userSourceCount);
         if (chunk.length > 0) {
-          rows.push(...chunk);
+          userSourceCount += appendUniqueMessageRows(rows, seenRows, chunk);
+        }
+      }
+
+      if (rows.length < targetCount) {
+        const participation = await getParticipationMetaByUser(input.userId);
+        let chatSourceCount = 0;
+        for (const meta of participation) {
+          const chatBuckets = getBucketsForParticipation(meta, input.bucket, buckets);
+          for (const bucket of chatBuckets) {
+            if (chatSourceCount >= targetCount || rows.length >= targetCount) break;
+            try {
+              const chunk = await listMessagesByChatBucketForUser(
+                meta.chat_id,
+                bucket,
+                input.userId,
+                targetCount - chatSourceCount
+              );
+              if (chunk.length > 0) {
+                chatSourceCount += appendUniqueMessageRows(rows, seenRows, chunk);
+              }
+            } catch (error) {
+              logUserMessageFallbackFailure("messages_by_chat", input.userId, error);
+              chatSourceCount = targetCount;
+              break;
+            }
+          }
+          if (chatSourceCount >= targetCount || rows.length >= targetCount) break;
+        }
+      }
+
+      if (rows.length < targetCount) {
+        try {
+          const idRows = await listMessagesByIdForUser(input.userId, targetCount);
+          if (idRows.length > 0) {
+            appendUniqueMessageRows(rows, seenRows, idRows);
+          }
+        } catch (error) {
+          logUserMessageFallbackFailure("messages_by_id", input.userId, error);
+        }
+      }
+
+      if (rows.length > 1) {
+        sortMessagesNewestFirst(rows);
+        if (rows.length > targetCount) {
+          rows.length = targetCount;
         }
       }
       const page = rows.slice(offset, offset + input.limit + 1);
 
       const items = (await Promise.all(
-        page.slice(0, input.limit).map((message) =>
-          getLookupMessage(String(message.chat_id), String(message.message_id), searchCtx, {
-            bucket: message.bucket ?? null,
-            timestamp: message.timestamp ? new Date(message.timestamp).toISOString() : null,
-          })
-        )
-      )).filter(Boolean) as z.infer<typeof LookupMessageSchema>[];
+        page.slice(0, input.limit).map((message) => buildLookupMessageFromUserRow(message, searchCtx))
+      ));
 
       return {
         items,
