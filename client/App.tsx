@@ -12,6 +12,9 @@ import { httpBatchLink } from "@trpc/client";
 import type { AppRouter } from "../server/trpc/router";
 import Index from "./pages/Index";
 import Pricing from "./pages/Pricing";
+import ApiDocs from "./pages/ApiDocs";
+import ApiAgents from "./pages/ApiAgents";
+import ApiAccess from "./pages/ApiAccess";
 import Placeholder from "./pages/Placeholder";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
@@ -38,6 +41,7 @@ import AdminVouchers from "./pages/admin/AdminVouchers";
 import AdminPurchases from "./pages/admin/AdminPurchases";
 import AdminAuditLogs from "./pages/admin/AdminAuditLogs";
 import AdminRedactions from "./pages/admin/AdminRedactions";
+import AdminApiAccess from "./pages/admin/AdminApiAccess";
 import Notifications from "./pages/Notifications";
 import TrackingCreditsBanner from "./components/TrackingCreditsBanner";
 
@@ -104,6 +108,8 @@ const App = () => (
             <Route path="/insights" element={<Placeholder />} />
             <Route path="/features" element={<Placeholder />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/api-docs" element={<ApiDocs />} />
+            <Route path="/api-agents" element={<ApiAgents />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<SignUp />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -122,6 +128,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <AccountSettings />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/api-access"
+              element={
+                <ProtectedRoute>
+                  <ApiAccess />
                 </ProtectedRoute>
               }
             />
@@ -215,6 +229,7 @@ const App = () => (
               <Route path="purchases" element={<AdminPurchases />} />
               <Route path="audit-logs" element={<AdminAuditLogs />} />
               <Route path="redactions" element={<AdminRedactions />} />
+              <Route path="api-access" element={<AdminApiAccess />} />
             </Route>
 
             <Route path="*" element={<NotFound />} />

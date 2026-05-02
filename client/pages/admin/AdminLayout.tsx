@@ -5,7 +5,7 @@ import Navbar from "@/components/Navbar";
 import { trpc } from "@/lib/trpc";
 import {
   Users, CreditCard, Ticket, ShoppingBag, ScrollText,
-  ShieldEllipsis, LayoutDashboard, X, Menu
+  ShieldEllipsis, LayoutDashboard, X, Menu, KeyRound
 } from "lucide-react";
 
 const adminNav = [
@@ -16,6 +16,7 @@ const adminNav = [
   { path: "/admin/purchases", label: "Purchases", icon: <ShoppingBag className="w-4 h-4" /> },
   { path: "/admin/audit-logs", label: "Audit Logs", icon: <ScrollText className="w-4 h-4" /> },
   { path: "/admin/redactions", label: "Redactions", icon: <ShieldEllipsis className="w-4 h-4" /> },
+  { path: "/admin/api-access", label: "API Access", icon: <KeyRound className="w-4 h-4" /> },
 ];
 
 export default function AdminLayout() {
@@ -86,7 +87,7 @@ export default function AdminLayout() {
   return (
     <div className="min-h-screen bg-[#0F0F11] flex flex-col">
       <div
-        className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 rounded-b-[40px] md:rounded-b-[50px] overflow-hidden"
+        className="mx-0 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 rounded-b-[32px] md:rounded-b-[50px] overflow-hidden max-w-full"
         style={{
           background: "radial-gradient(100% 100% at 50% 0%, rgba(15,15,17,0.50) 66.9%, rgba(58,42,238,0.50) 100%)",
           minHeight: "100vh",
@@ -96,7 +97,7 @@ export default function AdminLayout() {
           <Navbar />
         </div>
 
-        <div className="flex px-6 sm:px-10 lg:px-14 xl:px-20 py-6 gap-6">
+        <div className="flex px-4 sm:px-6 lg:px-10 xl:px-14 py-5 md:py-6 gap-5 lg:gap-6">
           <div
             ref={sidebarRef}
             className="hidden md:flex flex-col self-start rounded-[14px] overflow-hidden shrink-0 w-[220px] max-h-[calc(100vh-160px)]"
@@ -106,8 +107,9 @@ export default function AdminLayout() {
           </div>
 
           <button
-            className="md:hidden fixed bottom-6 right-6 z-50 w-12 h-12 rounded-full bg-[#3A2AEE] flex items-center justify-center shadow-lg"
+            className="md:hidden fixed bottom-5 right-5 z-50 w-12 h-12 rounded-full bg-[#3A2AEE] flex items-center justify-center shadow-lg border border-white/10"
             onClick={() => setSidebarOpen(true)}
+            aria-label="Open admin navigation"
           >
             <Menu className="w-5 h-5 text-white" />
           </button>
@@ -116,7 +118,7 @@ export default function AdminLayout() {
             <div className="md:hidden fixed inset-0 z-50 flex">
               <div className="flex-1 bg-black/60 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
               <div
-                className="w-[280px] rounded-l-[20px] overflow-hidden"
+                className="w-[min(82vw,300px)] rounded-l-[20px] overflow-hidden"
                 style={{ background: "rgba(17,16,24,0.95)", border: "1px solid rgba(58,42,238,0.2)" }}
               >
                 <div className="flex justify-end p-4">
@@ -129,7 +131,7 @@ export default function AdminLayout() {
             </div>
           )}
 
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 pb-16 md:pb-0">
             <Outlet />
           </div>
         </div>

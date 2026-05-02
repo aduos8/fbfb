@@ -11,7 +11,7 @@ import {
 } from "../../lib/tg-queries/queries";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
 import { canViewMessageAnalytics, getViewerAccess } from "../../lib/tg-queries/viewer";
-import { loadSingleRedaction } from "../../lib/tg-queries/redactions";
+import { canBypassResolvedRedactions, loadSingleRedaction } from "../../lib/tg-queries/redactions";
 
 const STOP_WORDS = new Set([
   "the", "and", "is", "in", "it", "to", "of", "a", "an", "for", "on", "with",
@@ -82,7 +82,7 @@ async function buildUserAnalyticsData(
   const viewer = await getViewerAccess({ userId: viewerUserId, role: viewerRole });
   const canAccessMessageInsights = await canViewMessageAnalytics(viewer.userId, viewerRole);
   const userRedaction = await loadSingleRedaction("user", userId);
-  if (userRedaction?.type === "full" && !viewer.canBypassRedactions) {
+  if (userRedaction?.type === "full" && !canBypassResolvedRedactions(viewer)) {
     return {
       userId: null,
       bucket: bucket ?? currentBucket(),
@@ -156,7 +156,7 @@ export const analyticsRouter = router({
 
       if (scopeType === "user" || scopeType === "userId") {
         const userRedaction = await loadSingleRedaction("user", scopeId);
-        if (userRedaction?.type === "full" && !viewer.canBypassRedactions) {
+        if (userRedaction?.type === "full" && !canBypassResolvedRedactions(viewer)) {
           return { words: [] };
         }
         const fields = new Set(userRedaction?.fields ?? []);
@@ -168,7 +168,7 @@ export const analyticsRouter = router({
         if (chat) {
           const targetType = chat.chat_type === "channel" ? "channel" : "group";
           const chatRedaction = await loadSingleRedaction(targetType, scopeId);
-          if (chatRedaction?.type === "full" && !viewer.canBypassRedactions) {
+          if (chatRedaction?.type === "full" && !canBypassResolvedRedactions(viewer)) {
             return { words: [] };
           }
           const fields = new Set(chatRedaction?.fields ?? []);
@@ -212,7 +212,7 @@ export const analyticsRouter = router({
       if (chat) {
         const targetType = chat.chat_type === "channel" ? "channel" : "group";
         const chatRedaction = await loadSingleRedaction(targetType, input.chatId);
-        if (chatRedaction?.type === "full" && !viewer.canBypassRedactions) {
+        if (chatRedaction?.type === "full" && !canBypassResolvedRedactions(viewer)) {
           return {
             chatId: input.chatId,
             bucket: input.bucket ?? currentBucket(),

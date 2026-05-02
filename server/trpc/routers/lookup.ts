@@ -28,7 +28,7 @@ import {
 } from "../../lib/tg-queries/queries";
 import { searchModeProcedure } from "../../lib/tg-queries/searchModeProcedure";
 import { canUseMessageSearch, canUseProfileFullAccess, getViewerAccess } from "../../lib/tg-queries/viewer";
-import { buildRedactionMetadata, loadSingleRedaction, loadRedactionMap, applyResolvedRedaction } from "../../lib/tg-queries/redactions";
+import { buildRedactionMetadata, loadSingleRedaction, loadRedactionMap, applyResolvedRedaction, canBypassResolvedRedactions } from "../../lib/tg-queries/redactions";
 import { toApiServedAssetUrl } from "../../lib/tg-queries/storageAssets";
 import { getTrackingByProfile } from "../../lib/db/tracking";
 import { maskPhoneNumber } from "../../lib/tg-queries/phone";
@@ -121,14 +121,15 @@ function messageRowKey(message: MessageRecord) {
   return `${String(message.chat_id)}:${String(message.message_id)}`;
 }
 
-function hasMessageTextContent(message: MessageRecord) {
-  return String(message.content ?? "").trim().length > 0;
+function isDisplayableLookupMessage(message: MessageRecord) {
+  return String(message.content ?? "").trim().length > 0
+    || Boolean(message.has_media ?? (message.media_type || message.media_url));
 }
 
 function appendUniqueMessageRows(target: MessageRecord[], seen: Set<string>, rows: MessageRecord[]) {
   let added = 0;
   for (const row of rows) {
-    if (!hasMessageTextContent(row)) {
+    if (!isDisplayableLookupMessage(row)) {
       continue;
     }
     const key = messageRowKey(row);
@@ -180,8 +181,9 @@ async function buildLookupMessageFromUserRow(
   const redactedFields = new Set(chatRedaction?.fields ?? []);
   const hideMessage =
     (chatRedaction?.type === "full" || chatRedaction?.type === "masked" || redactedFields.has("messages"))
-    && !searchCtx.viewer.canBypassRedactions;
+    && !canBypassResolvedRedactions(searchCtx.viewer);
   const content = hideMessage ? "[redacted]" : String(message.content ?? "");
+  const mediaUrl = toApiServedAssetUrl(message.media_url);
 
   return {
     messageId,
@@ -190,6 +192,8 @@ async function buildLookupMessageFromUserRow(
     content,
     highlightedSnippet: content,
     hasMedia: message.has_media ?? Boolean(message.media_type || message.media_url),
+    mediaType: message.media_type ?? null,
+    mediaUrl,
     containsLinks: /https?:\/\/|www\./i.test(content),
     sender: {
       userId: message.user_id ?? null,
@@ -198,11 +202,11 @@ async function buildLookupMessageFromUserRow(
     },
     chat: {
       chatId,
-      title: chatRedaction?.type === "masked" && !searchCtx.viewer.canBypassRedactions
+      title: chatRedaction?.type === "masked" && !canBypassResolvedRedactions(searchCtx.viewer)
         ? "Record unavailable"
         : chat?.display_name ?? null,
       type: chat?.chat_type ?? null,
-      username: redactedFields.has("username") && !searchCtx.viewer.canBypassRedactions
+      username: redactedFields.has("username") && !canBypassResolvedRedactions(searchCtx.viewer)
         ? null
         : chat?.username ?? null,
     },
@@ -275,7 +279,7 @@ export const lookupRouter = router({
       const viewer = await buildViewer(ctx);
       const redaction = await loadSingleRedaction("user", input.userId);
 
-      if (redaction?.type === "full" && !viewer.viewer.canBypassRedactions) {
+      if (redaction?.type === "full" && !canBypassResolvedRedactions(viewer.viewer)) {
         return null;
       }
 
@@ -303,7 +307,7 @@ export const lookupRouter = router({
       };
 
       const canAccessFullProfile = await canUseProfileFullAccess(viewer.viewer.userId, ctx.userRole);
-      if (!canAccessFullProfile && !viewer.viewer.canBypassRedactions) {
+      if (!canAccessFullProfile && !canBypassResolvedRedactions(viewer.viewer)) {
         result.bio = null;
       }
 
@@ -326,7 +330,7 @@ export const lookupRouter = router({
       const viewer = await buildViewer(ctx);
       const redaction = await loadSingleRedaction("user", user.user_id);
 
-      if (redaction?.type === "full" && !viewer.viewer.canBypassRedactions) {
+      if (redaction?.type === "full" && !canBypassResolvedRedactions(viewer.viewer)) {
         return null;
       }
 
@@ -354,7 +358,7 @@ export const lookupRouter = router({
       };
 
       const canAccessFullProfile = await canUseProfileFullAccess(viewer.viewer.userId, ctx.userRole);
-      if (!canAccessFullProfile && !viewer.viewer.canBypassRedactions) {
+      if (!canAccessFullProfile && !canBypassResolvedRedactions(viewer.viewer)) {
         result.bio = null;
       }
 
@@ -375,7 +379,7 @@ export const lookupRouter = router({
       const targetType = chat.chat_type === "channel" ? "channel" : "group";
       const redaction = await loadSingleRedaction(targetType, input.chatId);
 
-      if (redaction?.type === "full" && !viewer.viewer.canBypassRedactions) {
+      if (redaction?.type === "full" && !canBypassResolvedRedactions(viewer.viewer)) {
         return null;
       }
 
@@ -462,7 +466,7 @@ export const lookupRouter = router({
       const userRedactedFields = new Set(userRedaction?.fields ?? []);
       const messagesRedacted =
         (userRedaction?.type === "full" || userRedaction?.type === "masked" || userRedactedFields.has("messages"))
-        && !searchCtx.viewer.canBypassRedactions;
+        && !canBypassResolvedRedactions(searchCtx.viewer);
 
       if (messagesRedacted) {
         return { items: [], nextCursor: null, unavailableReason: "redacted" as const };
@@ -569,16 +573,7 @@ export const lookupRouter = router({
 
       const redaction = await loadSingleRedaction("user", input.userId);
 
-      if (redaction?.type === "full" && !viewer.canBypassRedactions) {
-        return {
-          displayNameHistory: [],
-          usernameHistory: [],
-          bioHistory: [],
-          phoneHistory: [],
-        };
-      }
-
-      if (redaction?.type === "masked" && !viewer.canBypassRedactions) {
+      if (redaction?.type === "full" && !canBypassResolvedRedactions(viewer)) {
         return {
           displayNameHistory: [],
           usernameHistory: [],
@@ -620,16 +615,23 @@ export const lookupRouter = router({
         }
       }
 
-      const fields = new Set(redaction?.fields ?? []);
+      const fields = new Set(
+        redaction?.type === "masked" && !canBypassResolvedRedactions(viewer)
+          ? ["username", "displayName", "bio", "phone"]
+          : redaction?.fields ?? []
+      );
 
       if (fields.has("username")) {
-        usernameHistory = usernameHistory.map(h => ({ ...h, oldValue: null, newValue: null }));
+        usernameHistory = usernameHistory.map(h => ({ ...h, oldValue: "[redacted]", newValue: "[redacted]" }));
       }
       if (fields.has("displayName")) {
-        displayNameHistory = displayNameHistory.map(h => ({ ...h, oldValue: null, newValue: null }));
+        displayNameHistory = displayNameHistory.map(h => ({ ...h, oldValue: "[redacted]", newValue: "[redacted]" }));
       }
       if (fields.has("bio")) {
-        bioHistory = bioHistory.map(h => ({ ...h, oldValue: null, newValue: null }));
+        bioHistory = bioHistory.map(h => ({ ...h, oldValue: "[redacted]", newValue: "[redacted]" }));
+      }
+      if (fields.has("phone")) {
+        phoneHistory = phoneHistory.map(h => ({ ...h, oldValue: "[redacted]", newValue: "[redacted]" }));
       }
 
       return { displayNameHistory, usernameHistory, bioHistory, phoneHistory };
@@ -644,7 +646,7 @@ export const lookupRouter = router({
 
       const userRedaction = await loadSingleRedaction("user", input.userId);
 
-      if ((userRedaction?.type === "full" || userRedaction?.type === "masked") && !viewer.canBypassRedactions) {
+      if ((userRedaction?.type === "full" || userRedaction?.type === "masked") && !canBypassResolvedRedactions(viewer)) {
         return [];
       }
 
@@ -681,7 +683,7 @@ export const lookupRouter = router({
           ...(chatRedaction?.fields ?? []),
         ]);
 
-        const hasFullRedaction = (userRedaction?.type === "full" || chatRedaction?.type === "full" || chatRedaction?.type === "masked") && !viewer.canBypassRedactions;
+        const hasFullRedaction = (userRedaction?.type === "full" || chatRedaction?.type === "full" || chatRedaction?.type === "masked") && !canBypassResolvedRedactions(viewer);
         if (hasFullRedaction) {
           return {
             chatId: item.chat_id,

@@ -2,6 +2,12 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { sql } from "../../lib/db";
 import {
+  getApiAccessSettings,
+  listUserApiAccessOverrides,
+  setUserApiAccessOverride,
+  updateApiAccessSettings,
+} from "../../lib/db/apiAccess";
+import {
   CANONICAL_REDACTION_FIELDS,
   listRedactionsByType,
   removeRedactionByTarget,
@@ -136,7 +142,32 @@ export const adminRouter = t.router({
           WHERE u.id = ${input.id}
         `;
         if (!user) throw new TRPCError({ code: "NOT_FOUND" });
-        return { user, balance: user.balance };
+
+        const [activity] = await sql<{
+          total_transactions: string;
+          total_searches: string;
+          total_purchases: string;
+          last_transaction_at: Date | null;
+        }[]>`
+          SELECT
+            COUNT(ct.id)::text AS total_transactions,
+            COUNT(ct.id) FILTER (WHERE ct.type = 'credit_deducted' AND ct.reference LIKE 'search:%')::text AS total_searches,
+            (SELECT COUNT(*)::text FROM purchases p WHERE p.user_id = ${input.id}) AS total_purchases,
+            MAX(ct.created_at) AS last_transaction_at
+          FROM credit_transactions ct
+          WHERE ct.user_id = ${input.id}
+        `;
+
+        return {
+          user,
+          balance: user.balance,
+          activity: {
+            total_transactions: Number(activity?.total_transactions ?? 0),
+            total_searches: Number(activity?.total_searches ?? 0),
+            total_purchases: Number(activity?.total_purchases ?? 0),
+            last_transaction_at: activity?.last_transaction_at?.toISOString() ?? null,
+          },
+        };
       }),
 
     suspend: adminProcedure
@@ -203,7 +234,11 @@ export const adminRouter = t.router({
       }),
 
     getUserPurchases: adminProcedure
-      .input(z.object({ userId: z.string().uuid() }))
+      .input(z.object({
+        userId: z.string().uuid(),
+        limit: z.number().min(1).max(50).default(10),
+        offset: z.number().min(0).default(0),
+      }))
       .query(async ({ input }) => {
         const purchases = await sql<{
           id: string;
@@ -216,29 +251,57 @@ export const adminRouter = t.router({
           FROM purchases
           WHERE user_id = ${input.userId}
           ORDER BY created_at DESC
-          LIMIT 50
+          LIMIT ${input.limit}
+          OFFSET ${input.offset}
         `;
-        return { purchases };
+        const [totalRow] = await sql<{ count: string }[]>`
+          SELECT COUNT(*) AS count
+          FROM purchases
+          WHERE user_id = ${input.userId}
+        `;
+        return { purchases, total: Number(totalRow?.count ?? 0) };
       }),
 
     getUserTransactions: adminProcedure
-      .input(z.object({ userId: z.string().uuid() }))
+      .input(z.object({
+        userId: z.string().uuid(),
+        limit: z.number().min(1).max(50).default(10),
+        offset: z.number().min(0).default(0),
+      }))
       .query(async ({ input }) => {
         const transactions = await sql<{
           id: string;
           user_id: string;
           amount: number;
           type: string;
+          reference: string | null;
           notes: string | null;
           created_at: Date;
         }[]>`
-          SELECT id, user_id, amount, type, notes, created_at
+          SELECT id, user_id, amount, type, reference, notes, created_at
           FROM credit_transactions
           WHERE user_id = ${input.userId}
           ORDER BY created_at DESC
-          LIMIT 50
+          LIMIT ${input.limit}
+          OFFSET ${input.offset}
         `;
-        return { transactions };
+        const [totalRow] = await sql<{ count: string }[]>`
+          SELECT COUNT(*) AS count
+          FROM credit_transactions
+          WHERE user_id = ${input.userId}
+        `;
+        return {
+          transactions: transactions.map((t) => ({
+            id: t.id,
+            user_id: t.user_id,
+            amount: Number(t.amount),
+            transaction_type: t.type,
+            reference: t.reference,
+            notes: t.notes,
+            created_at: t.created_at.toISOString(),
+          })),
+          total: Number(totalRow?.count ?? 0),
+        };
       }),
 
     changeRole: adminProcedure
@@ -785,6 +848,96 @@ export const adminRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         await reactivateRedaction(input.entityType, input.entityId, ctx.userId);
         return { ok: true };
+      }),
+  }),
+
+  apiAccess: t.router({
+    getSettings: adminProcedure.query(async () => {
+      const settings = await getApiAccessSettings();
+      const overrides = await listUserApiAccessOverrides();
+      return {
+        settings: {
+          enabled: settings.enabled,
+          allowed_plan_types: settings.allowed_plan_types,
+          updated_at: settings.updated_at.toISOString(),
+        },
+        overrides: overrides.map((entry) => ({
+          user_id: entry.user_id,
+          email: entry.email,
+          mode: entry.mode,
+          reason: entry.reason,
+          updated_at: entry.updated_at.toISOString(),
+        })),
+      };
+    }),
+
+    updateSettings: adminProcedure
+      .input(z.object({
+        enabled: z.boolean(),
+        allowedPlanTypes: z.array(z.enum(["basic", "intermediate", "advanced"])),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const before = await getApiAccessSettings();
+        const settings = await updateApiAccessSettings({
+          enabled: input.enabled,
+          allowedPlanTypes: input.allowedPlanTypes,
+          actorId: ctx.userId,
+        });
+        await sql`
+          INSERT INTO audit_logs (admin_id, action, target_type, target_id, before_value, after_value)
+          VALUES (
+            ${ctx.userId},
+            'api_access_settings_update',
+            'api_access',
+            'global',
+            ${JSON.stringify({ enabled: before.enabled, allowed_plan_types: before.allowed_plan_types })}::jsonb,
+            ${JSON.stringify({ enabled: settings.enabled, allowed_plan_types: settings.allowed_plan_types })}::jsonb
+          )
+        `;
+        return {
+          settings: {
+            enabled: settings.enabled,
+            allowed_plan_types: settings.allowed_plan_types,
+            updated_at: settings.updated_at.toISOString(),
+          },
+        };
+      }),
+
+    setUserOverride: adminProcedure
+      .input(z.object({
+        userId: z.string().uuid(),
+        mode: z.enum(["default", "allow", "block"]),
+        reason: z.string().max(500).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const target = await getTargetUserOrThrow(input.userId);
+        if (target.role === "owner" && ctx.userRole !== "owner") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only owners can manage owner API access" });
+        }
+        const override = await setUserApiAccessOverride({
+          userId: input.userId,
+          mode: input.mode,
+          reason: input.reason,
+          actorId: ctx.userId,
+        });
+        await sql`
+          INSERT INTO audit_logs (admin_id, action, target_type, target_id, after_value)
+          VALUES (
+            ${ctx.userId},
+            'api_access_user_override',
+            'user',
+            ${input.userId},
+            ${JSON.stringify({ mode: override.mode, reason: override.reason })}::jsonb
+          )
+        `;
+        return {
+          override: {
+            user_id: override.user_id,
+            mode: override.mode,
+            reason: override.reason,
+            updated_at: override.updated_at.toISOString(),
+          },
+        };
       }),
   }),
 });

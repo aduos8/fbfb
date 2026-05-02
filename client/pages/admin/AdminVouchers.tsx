@@ -72,14 +72,14 @@ export default function AdminVouchers() {
 
   return (
     <div ref={contentRef}>
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-8">
         <div>
           <h1 className="vouchers-title font-sans font-semibold text-white text-[28px] sm:text-[32px] md:text-[35px] leading-none">
             Voucher <span className="font-handwriting text-[#3A2AEE]">Management</span>
           </h1>
           <p className="font-sans font-normal text-[13px] text-white/40 mt-2">Create and manage redemption codes</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <button
             onClick={() => refetch()}
             className="flex items-center gap-2 px-4 py-2.5 rounded-[10px] bg-transparent border border-white/10 text-white/60 font-sans text-[12px] hover:bg-white/5 transition-colors cursor-pointer"
@@ -112,7 +112,7 @@ export default function AdminVouchers() {
       <div className="voucher-card card-border-gradient rounded-[20px] overflow-hidden">
         {voucherList.length > 0 ? (
           <div className="grid gap-0">
-            <div className="grid grid-cols-6 gap-4 px-6 py-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="hidden lg:grid grid-cols-6 gap-4 px-6 py-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
               <span className="font-sans text-[11px] font-medium text-white/50 uppercase tracking-wider">Code</span>
               <span className="font-sans text-[11px] font-medium text-white/50 uppercase tracking-wider">Credits</span>
               <span className="font-sans text-[11px] font-medium text-white/50 uppercase tracking-wider">Max Uses</span>
@@ -123,7 +123,7 @@ export default function AdminVouchers() {
             {voucherList.map((v: any, i: number) => (
               <div
                 key={i}
-                className="grid grid-cols-6 gap-4 px-6 py-4 items-center hover:bg-white/[0.02] transition-colors cursor-pointer"
+                className="grid grid-cols-1 gap-4 px-4 py-4 transition-colors cursor-pointer hover:bg-white/[0.02] lg:grid-cols-6 lg:px-6"
                 style={{ borderBottom: i < voucherList.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" }}
                 onClick={() => setSelectedVoucher(v)}
               >
@@ -133,9 +133,20 @@ export default function AdminVouchers() {
                   </div>
                   <span className="font-mono font-semibold text-[13px] text-[#3A2AEE]">{v.code}</span>
                 </div>
-                <span className="font-sans font-semibold text-[14px] text-[#05df72]">{v.amount}</span>
-                <span className="font-sans text-[13px] text-white/50">{v.max_redemptions || "Unlimited"}</span>
-                <span className="font-sans text-[13px] text-white/50">{v.redemption_count ?? v.redemptions_count ?? 0}</span>
+                <div className="grid grid-cols-3 gap-3 lg:contents">
+                  <div className="lg:contents">
+                    <p className="mb-1 font-sans text-[10px] uppercase tracking-[0.1em] text-white/35 lg:hidden">Credits</p>
+                    <span className="font-sans font-semibold text-[14px] text-[#05df72]">{v.amount}</span>
+                  </div>
+                  <div className="lg:contents">
+                    <p className="mb-1 font-sans text-[10px] uppercase tracking-[0.1em] text-white/35 lg:hidden">Max Uses</p>
+                    <span className="font-sans text-[13px] text-white/50">{v.max_redemptions || "Unlimited"}</span>
+                  </div>
+                  <div className="lg:contents">
+                    <p className="mb-1 font-sans text-[10px] uppercase tracking-[0.1em] text-white/35 lg:hidden">Used</p>
+                    <span className="font-sans text-[13px] text-white/50">{v.redemption_count ?? v.redemptions_count ?? 0}</span>
+                  </div>
+                </div>
                 <span className={`inline-flex px-3 py-1 rounded-full text-[10px] font-semibold w-fit ${
                   v.active
                     ? "bg-[#05df72]/10 text-[#05df72] border border-[#05df72]/20"
@@ -143,7 +154,7 @@ export default function AdminVouchers() {
                 }`}>
                   {v.active ? "Active" : "Disabled"}
                 </span>
-                <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2 lg:justify-end" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => setSelectedVoucher(v)}
                     className="px-3 py-1.5 rounded-[6px] bg-white/5 border border-white/10 text-white/60 text-[11px] hover:bg-white/10 transition-colors cursor-pointer"
@@ -183,7 +194,7 @@ export default function AdminVouchers() {
           onClick={() => setShowCreate(false)}
         >
           <div
-            className="w-full max-w-md card-border-gradient rounded-[20px] p-8"
+            className="w-full max-w-md card-border-gradient rounded-[20px] p-5 sm:p-8 max-h-[92vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-6">
@@ -250,7 +261,7 @@ export default function AdminVouchers() {
                 </div>
               </div>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
                 <button
                   onClick={() => createMutation.mutate({
                     code,

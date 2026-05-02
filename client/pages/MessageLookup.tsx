@@ -20,6 +20,20 @@ function HighlightedMarkup({ html }: { html: string }) {
   return <div dangerouslySetInnerHTML={{ __html: sanitizeHighlightedSnippet(html) }} />;
 }
 
+function isImageMedia(message: LookupMessage) {
+  const mediaType = message.mediaType?.toLowerCase() ?? "";
+  const mediaUrl = message.mediaUrl?.toLowerCase() ?? "";
+  return mediaType.includes("image")
+    || [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].some((ext) => mediaUrl.endsWith(ext));
+}
+
+function isVideoMedia(message: LookupMessage) {
+  const mediaType = message.mediaType?.toLowerCase() ?? "";
+  const mediaUrl = message.mediaUrl?.toLowerCase() ?? "";
+  return mediaType.includes("video")
+    || [".mp4", ".webm", ".mov", ".m4v", ".avi"].some((ext) => mediaUrl.endsWith(ext));
+}
+
 export default function MessageLookup() {
   const { chatId, messageId } = useParams<{ chatId: string; messageId: string }>();
   const location = useLocation();
@@ -35,6 +49,7 @@ export default function MessageLookup() {
 
   const message = (data as LookupMessage | null) ?? prefetchedMessage;
   const isPreviewOnly = !data && !!prefetchedMessage;
+  const hasRenderableMedia = Boolean(message?.hasMedia && message.mediaUrl);
 
   return (
     <div className="min-h-screen bg-[#0F0F11]">
@@ -113,9 +128,38 @@ export default function MessageLookup() {
                 <div className="rounded-[10px] p-4 bg-[rgba(255,255,255,0.03)] border border-white/6 text-white/80 leading-relaxed">
                   <HighlightedMarkup html={message.highlightedSnippet || message.content} />
                 </div>
+
+                {hasRenderableMedia && isImageMedia(message) && (
+                  <div className="mt-5 overflow-hidden rounded-[14px] border border-white/8 bg-black/20">
+                    <img
+                      src={message.mediaUrl ?? undefined}
+                      alt="Message media"
+                      className="block max-h-[36rem] w-full object-contain"
+                    />
+                  </div>
+                )}
+
+                {hasRenderableMedia && isVideoMedia(message) && (
+                  <div className="mt-5 overflow-hidden rounded-[14px] border border-white/8 bg-black/20">
+                    <video
+                      src={message.mediaUrl ?? undefined}
+                      controls
+                      playsInline
+                      className="block max-h-[36rem] w-full"
+                    />
+                  </div>
+                )}
+
+                {message.hasMedia && !hasRenderableMedia && (
+                  <div className="mt-5 rounded-[12px] border border-white/8 bg-white/[0.025] p-4">
+                    <p className="font-sans text-[12px] text-white/55">
+                      Media is attached to this message, but no viewable asset URL is available for preview.
+                    </p>
+                  </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div className="card-border-gradient rounded-[20px] p-4">
                   <p className="font-sans text-[10px] text-white/40 uppercase tracking-wider mb-1">Sender</p>
                   <p className="font-sans text-[14px] text-white/70">{message.sender.displayName || message.sender.username || message.sender.userId || "Unknown"}</p>
@@ -123,6 +167,10 @@ export default function MessageLookup() {
                 <div className="card-border-gradient rounded-[20px] p-4">
                   <p className="font-sans text-[10px] text-white/40 uppercase tracking-wider mb-1">Has Media</p>
                   <p className="font-sans text-[14px] text-white/70">{message.hasMedia ? "Yes" : "No"}</p>
+                </div>
+                <div className="card-border-gradient rounded-[20px] p-4">
+                  <p className="font-sans text-[10px] text-white/40 uppercase tracking-wider mb-1">Media Type</p>
+                  <p className="font-sans text-[14px] text-white/70">{message.mediaType || "Unavailable"}</p>
                 </div>
                 <div className="card-border-gradient rounded-[20px] p-4">
                   <p className="font-sans text-[10px] text-white/40 uppercase tracking-wider mb-1">Contains Links</p>

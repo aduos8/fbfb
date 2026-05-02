@@ -30,6 +30,7 @@ describe("redaction integration", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -46,13 +47,22 @@ describe("redaction integration", () => {
       expect(result).toBeNull();
     });
 
-    it("should allow admin to bypass full redaction", () => {
+    it("should enforce full redaction for admin by default", () => {
       const result = applyResolvedRedaction({
         telegramUserId: "123456789",
         username: "testuser",
       }, fullRedaction, privilegedViewer);
 
-      expect(result).not.toBeNull();
+      expect(result).toBeNull();
+    });
+
+    it("should allow admin to bypass full redaction only when explicitly enabled", () => {
+      vi.stubEnv("ALLOW_REDACTION_BYPASS", "true");
+      const result = applyResolvedRedaction({
+        telegramUserId: "123456789",
+        username: "testuser",
+      }, fullRedaction, privilegedViewer);
+
       expect(result?.telegramUserId).toBe("123456789");
       expect(result?.username).toBe("testuser");
     });
@@ -292,7 +302,7 @@ describe("redaction integration", () => {
   });
 
   describe("viewer bypass", () => {
-    it("should allow subscription viewer to bypass redaction", () => {
+    it("should enforce redaction for subscription viewer by default", () => {
       const subscriptionViewer = {
         userId: "viewer-3",
         role: "user" as const,
@@ -305,12 +315,11 @@ describe("redaction integration", () => {
         displayName: "Test User",
       }, fullRedaction, subscriptionViewer);
 
-      expect(result).not.toBeNull();
-      expect(result?.username).toBe("testuser");
-      expect(result?.displayName).toBe("Test User");
+      expect(result).toBeNull();
     });
 
-    it("should not add redaction metadata for bypassed redactions", () => {
+    it("should add redaction metadata for bypassed redactions", () => {
+      vi.stubEnv("ALLOW_REDACTION_BYPASS", "true");
       const result = applyResolvedRedaction({
         username: "testuser",
       }, fullRedaction, privilegedViewer);

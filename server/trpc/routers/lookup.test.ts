@@ -6,9 +6,11 @@ import type { LookupMessage } from "../../../shared/api";
 
 const {
   canUseMessageSearchMock,
+  canUseProfileFullAccessMock,
   getChatByIdMock,
   getLookupMessageMock,
   getParticipationMetaByUserMock,
+  getUserHistoryMock,
   getViewerAccessMock,
   listMessagesByChatBucketForUserMock,
   listMessagesByIdForUserMock,
@@ -17,9 +19,11 @@ const {
   loadSingleRedactionMock,
 } = vi.hoisted(() => ({
   canUseMessageSearchMock: vi.fn(),
+  canUseProfileFullAccessMock: vi.fn(),
   getChatByIdMock: vi.fn(),
   getLookupMessageMock: vi.fn(),
   getParticipationMetaByUserMock: vi.fn(),
+  getUserHistoryMock: vi.fn(),
   getViewerAccessMock: vi.fn(),
   listMessagesByChatBucketForUserMock: vi.fn(),
   listMessagesByIdForUserMock: vi.fn(),
@@ -34,7 +38,7 @@ vi.mock("../../lib/tg-queries/queries", () => ({
   getParticipationByUser: vi.fn(),
   getUserById: vi.fn(),
   getUserByUsername: vi.fn(),
-  getUserHistory: vi.fn(),
+  getUserHistory: getUserHistoryMock,
   getUserHistoryForBatch: vi.fn(),
   formatMessageBucket: vi.fn((value: Date | string | null | undefined) => {
     if (!value) return null;
@@ -51,13 +55,14 @@ vi.mock("../../lib/tg-queries/queries", () => ({
 
 vi.mock("../../lib/tg-queries/viewer", () => ({
   canUseMessageSearch: canUseMessageSearchMock,
-  canUseProfileFullAccess: vi.fn(),
+  canUseProfileFullAccess: canUseProfileFullAccessMock,
   getViewerAccess: getViewerAccessMock,
 }));
 
 vi.mock("../../lib/tg-queries/redactions", () => ({
   applyResolvedRedaction: vi.fn((value) => value),
   buildRedactionMetadata: vi.fn(() => ({ applied: false, type: "none", redactedFields: [], reason: null })),
+  canBypassResolvedRedactions: vi.fn(() => false),
   loadRedactionMap: loadRedactionMapMock,
   loadSingleRedaction: loadSingleRedactionMock,
 }));
@@ -121,8 +126,10 @@ describe("lookup.getUserMessages", () => {
     vi.clearAllMocks();
     getViewerAccessMock.mockResolvedValue({ userId: "viewer-1", role: "user", canBypassRedactions: false });
     canUseMessageSearchMock.mockResolvedValue(true);
+    canUseProfileFullAccessMock.mockResolvedValue(true);
     getChatByIdMock.mockResolvedValue(null);
     getParticipationMetaByUserMock.mockResolvedValue([]);
+    getUserHistoryMock.mockResolvedValue([]);
     listMessagesByChatBucketForUserMock.mockResolvedValue([]);
     listMessagesByIdForUserMock.mockResolvedValue([]);
     loadRedactionMapMock.mockResolvedValue(new Map());
@@ -256,12 +263,14 @@ describe("lookup.getUserMessages", () => {
     listMessagesByUserBucketMock.mockResolvedValueOnce([
       { ...messageRow(1), message_id: "message-empty", content: "" },
       { ...messageRow(2), message_id: "message-space", content: "   " },
-      { ...messageRow(3), message_id: "message-text", content: "actual text" },
+      { ...messageRow(3), message_id: "message-media", content: "", has_media: true, media_type: "image", media_url: "media/test.webp" },
+      { ...messageRow(4), message_id: "message-text", content: "actual text" },
     ]);
 
     const result = await createCaller().lookup.getUserMessages({ userId: "target-user", limit: 10 });
 
-    expect(result.items.map((item) => item.messageId)).toEqual(["message-text"]);
+    expect(result.items.map((item) => item.messageId)).toEqual(["message-text", "message-media"]);
+    expect(result.items[1]?.mediaUrl).toBe("media/test.webp");
   });
 
   it("checks messages_by_chat and messages_by_id when building the user's last messages", async () => {
@@ -318,5 +327,47 @@ describe("lookup.getUserMessages", () => {
     expect(result.items[0]?.messageId).toBe("message-user");
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe("lookup.getUserHistory", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getViewerAccessMock.mockResolvedValue({ userId: "viewer-1", role: "user", canBypassRedactions: false });
+    loadSingleRedactionMock.mockResolvedValue(null);
+    getUserHistoryMock.mockResolvedValue([
+      {
+        field: "display_name",
+        old_value: "Old Name",
+        new_value: "New Name",
+        changed_at: new Date("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        field: "bio",
+        old_value: "old bio",
+        new_value: "new bio",
+        changed_at: new Date("2026-05-01T11:00:00.000Z"),
+      },
+    ]);
+  });
+
+  it("returns explicit redacted entries for masked profile history", async () => {
+    loadSingleRedactionMock.mockResolvedValue({
+      id: "redaction-1",
+      targetType: "user",
+      targetId: "target-user",
+      type: "masked",
+      fields: ["userId", "username", "displayName", "bio", "profilePhoto", "phone", "messages", "groups", "channels"],
+      reason: "privacy request",
+    });
+
+    const result = await createCaller().lookup.getUserHistory({ userId: "target-user" });
+
+    expect(result.displayNameHistory).toEqual([
+      { oldValue: "[redacted]", newValue: "[redacted]", changedAt: "2026-05-01T10:00:00.000Z" },
+    ]);
+    expect(result.bioHistory).toEqual([
+      { oldValue: "[redacted]", newValue: "[redacted]", changedAt: "2026-05-01T11:00:00.000Z" },
+    ]);
   });
 });

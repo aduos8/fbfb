@@ -77,7 +77,7 @@ export default function Vouchers() {
   return (
     <div ref={pageRef} className="min-h-screen bg-[#0f0f11] flex flex-col">
       <div
-        className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 rounded-b-[40px] md:rounded-b-[50px] overflow-hidden flex flex-col"
+        className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 rounded-b-[40px] md:rounded-b-[50px] overflow-hidden flex flex-col"
         style={{
           background: "radial-gradient(100% 100% at 50% 0%, rgba(15,15,17,0.50) 66.9%, rgba(58,42,238,0.50) 100%)",
           minHeight: "100vh",

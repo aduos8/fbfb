@@ -13,6 +13,9 @@ import {
   Bell,
   Tag,
   Activity,
+  KeyRound,
+  BookOpen,
+  Sparkles,
   Menu,
   X,
 } from "lucide-react";
@@ -95,7 +98,7 @@ export default function Navbar() {
     return (
       <>
         {/* Desktop / mobile top bar */}
-        <div className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 flex items-center justify-between py-4">
+        <div className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 flex items-center justify-between py-4">
           {/* Left: brand + desktop nav links */}
           <div className="flex items-center gap-8">
             <Link to="/" className="font-sans font-semibold text-base text-white">
@@ -108,6 +111,7 @@ export default function Navbar() {
               <Link to="/tracking" className={navLinkClass("/tracking")}>Tracking</Link>
               <Link to="/pricing" className={navLinkClass("/pricing")}>Pricing</Link>
               <Link to="/credits" className={navLinkClass("/credits")}>Credits</Link>
+              <Link to="/api-docs" className={navLinkClass("/api-docs")}>API</Link>
               {adminMode && (
                 <Link to="/admin" className={navLinkClass("/admin")}>Admin</Link>
               )}
@@ -163,6 +167,15 @@ export default function Navbar() {
                     </Link>
                     <Link to="/tracking" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer">
                       <Activity className="w-3.5 h-3.5 text-white/60" />Tracking
+                    </Link>
+                    <Link to="/api-access" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer">
+                      <KeyRound className="w-3.5 h-3.5 text-white/60" />API Access
+                    </Link>
+                    <Link to="/api-docs" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer">
+                      <BookOpen className="w-3.5 h-3.5 text-white/60" />API Docs
+                    </Link>
+                    <Link to="/api-agents" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer">
+                      <Sparkles className="w-3.5 h-3.5 text-white/60" />API Agents
                     </Link>
                     <Link to="/notifications" onClick={() => setMenuOpen(false)} className="flex items-center justify-between px-2 py-2 font-sans font-normal text-[13px] text-white rounded-[4px] hover:bg-[rgba(58,42,238,0.15)] transition-colors cursor-pointer">
                       <span className="flex items-center gap-2.5">
@@ -245,12 +258,15 @@ export default function Navbar() {
             <Link to="/tracking" className={mobileLinkClass("/tracking")}>Tracking</Link>
             <Link to="/pricing" className={mobileLinkClass("/pricing")}>Pricing</Link>
             <Link to="/credits" className={mobileLinkClass("/credits")}>Credits</Link>
+            <Link to="/api-docs" className={mobileLinkClass("/api-docs")}>API Docs</Link>
+            <Link to="/api-agents" className={mobileLinkClass("/api-agents")}>API Agents</Link>
             {adminMode && (
               <Link to="/admin" className={mobileLinkClass("/admin")}>Admin</Link>
             )}
 
             {/* Account links */}
             <Link to="/account" className={mobileLinkClass("/account")}>Account</Link>
+            <Link to="/api-access" className={mobileLinkClass("/api-access")}>API Access</Link>
             <Link to="/purchases" className={mobileLinkClass("/purchases")}>Purchases</Link>
             <Link to="/vouchers" className={mobileLinkClass("/vouchers")}>Redeem Voucher</Link>
             <Link to="/notifications" className="flex items-center justify-between font-sans font-normal text-base text-white/60 transition-colors py-3 border-b border-white/[0.06]">
@@ -280,7 +296,7 @@ export default function Navbar() {
   // Unauthenticated
   return (
     <>
-      <div className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 flex items-center justify-between py-4">
+      <div className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 flex items-center justify-between py-4">
         {/* Brand */}
         <div className="flex items-center gap-8">
           <Link to="/" className="font-sans font-semibold text-base text-white">
@@ -292,6 +308,7 @@ export default function Navbar() {
             <Link to="/insights" className={navLinkClass("/insights")}>Insights</Link>
             <Link to="/features" className={navLinkClass("/features")}>Features</Link>
             <Link to="/pricing" className={navLinkClass("/pricing")}>Pricing</Link>
+            <Link to="/api-docs" className={navLinkClass("/api-docs")}>API</Link>
           </div>
         </div>
 
@@ -333,8 +350,10 @@ export default function Navbar() {
           <Link to="/" className={mobileLinkClass("/")}>Search</Link>
           <Link to="/insights" className={mobileLinkClass("/insights")}>Insights</Link>
           <Link to="/features" className={mobileLinkClass("/features")}>Features</Link>
-          <Link to="/pricing" className={mobileLinkClass("/pricing")}>Pricing</Link>
-          <div className="flex flex-col gap-3 pt-4">
+            <Link to="/pricing" className={mobileLinkClass("/pricing")}>Pricing</Link>
+            <Link to="/api-docs" className={mobileLinkClass("/api-docs")}>API Docs</Link>
+            <Link to="/api-agents" className={mobileLinkClass("/api-agents")}>API Agents</Link>
+            <div className="flex flex-col gap-3 pt-4">
             <Link
               to="/login"
               className="font-sans font-normal text-sm text-white/60 transition-colors"

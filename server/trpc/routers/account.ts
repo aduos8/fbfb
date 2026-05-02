@@ -2,6 +2,8 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { sql } from "../../lib/db";
+import { resolveUserApiAccess } from "../../lib/db/apiAccess";
+import { createApiKey, listApiKeys, revokeApiKey } from "../../lib/db/apiKeys";
 import { listActiveEntitlements } from "../../lib/db/entitlements";
 import { appendSetCookie, clearAuthStateCookie, getTokenCookieOptions, type Context } from "../context";
 
@@ -56,6 +58,61 @@ export const accountRouter = t.router({
       })),
     };
   }),
+
+  listApiKeys: protectedProcedure.query(async ({ ctx }) => {
+    const keys = await listApiKeys(ctx.userId);
+    return {
+      keys: keys.map((key) => ({
+        id: key.id,
+        name: key.name,
+        key_prefix: key.key_prefix,
+        last_used_at: key.last_used_at?.toISOString() ?? null,
+        revoked_at: key.revoked_at?.toISOString() ?? null,
+        created_at: key.created_at.toISOString(),
+      })),
+    };
+  }),
+
+  getApiAccess: protectedProcedure.query(async ({ ctx }) => {
+    return resolveUserApiAccess(ctx.userId);
+  }),
+
+  createApiKey: protectedProcedure
+    .input(z.object({ name: z.string().min(1).max(120).default("Enterprise API key") }))
+    .mutation(async ({ ctx, input }) => {
+      const access = await resolveUserApiAccess(ctx.userId);
+      if (!access.allowed && ctx.userRole !== "admin" && ctx.userRole !== "owner") {
+        throw new TRPCError({ code: "FORBIDDEN", message: access.reason });
+      }
+      let created: Awaited<ReturnType<typeof createApiKey>>;
+      try {
+        created = await createApiKey(ctx.userId, input.name);
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: error instanceof Error ? error.message : "Unable to create API key",
+        });
+      }
+      return {
+        key: created.key,
+        apiKey: {
+          id: created.row.id,
+          name: created.row.name,
+          key_prefix: created.row.key_prefix,
+          created_at: created.row.created_at.toISOString(),
+        },
+      };
+    }),
+
+  revokeApiKey: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const ok = await revokeApiKey(ctx.userId, input.id);
+      if (!ok) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "API key not found" });
+      }
+      return { ok: true };
+    }),
 
   updateProfile: protectedProcedure
     .input(z.object({ displayName: z.string().min(1).max(50).optional() }))

@@ -13,6 +13,7 @@ import { appRouter } from "./trpc/router";
 import { createContext } from "./trpc/context";
 import oxapayWebhook from "./routes/webhooks/oxapay";
 import { handleAssets } from "./routes/assets";
+import { handlePublicApiCredits, handlePublicApiSearch } from "./routes/publicApi";
 import path from "path";
 
 export function createServer() {
@@ -55,7 +56,7 @@ export function createServer() {
     },
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
     maxAge: 86400,
   }));
 
@@ -186,6 +187,9 @@ export function createServer() {
   app.post("/api/demo", express.json({ limit: "10kb" }), handleDemo);
 
   app.use("/api/assets", handleAssets);
+
+  app.post("/api/v1/search", express.json({ limit: "50kb" }), handlePublicApiSearch);
+  app.get("/api/v1/credits", handlePublicApiCredits);
 
   app.post("/api/webhooks/oxapay", express.json({ limit: "10kb" }), oxapayWebhook);
 

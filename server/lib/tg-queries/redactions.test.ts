@@ -39,6 +39,7 @@ describe("redactions", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -74,19 +75,82 @@ describe("redactions", () => {
     });
   });
 
+  it("applies partial masking inside nested message sender and chat fields", () => {
+    const result = applyResolvedRedaction({
+      sender: {
+        userId: "123",
+        username: "target",
+        displayName: "Target User",
+      },
+      chat: {
+        chatId: "456",
+        username: "secretchat",
+        title: "Secret Chat",
+      },
+      snippet: "hello world",
+      highlightedSnippet: "<mark>hello</mark> world",
+      matchedTerms: ["hello"],
+    }, partialRedaction, regularViewer);
+
+    expect(result?.sender).toEqual({
+      userId: "123",
+      username: "[redacted]",
+      displayName: "[redacted]",
+    });
+    expect(result?.chat).toEqual({
+      chatId: "456",
+      username: "[redacted]",
+      title: "[redacted]",
+    });
+    expect(result?.snippet).toBe("[redacted]");
+    expect(result?.matchedTerms).toEqual([]);
+  });
+
+  it("masks nested message records as explicitly redacted", () => {
+    const result = applyResolvedRedaction({
+      sender: {
+        userId: "123",
+        username: "target",
+        displayName: "Target User",
+      },
+      chat: {
+        chatId: "456",
+        username: "secretchat",
+        title: "Secret Chat",
+      },
+      snippet: "hello world",
+      highlightedSnippet: "<mark>hello</mark> world",
+      matchedTerms: ["hello"],
+    }, { ...partialRedaction, type: "masked", fields: ["username", "displayName", "messages"] }, regularViewer);
+
+    expect(result?.isMasked).toBe(true);
+    expect(result?.sender).toEqual({
+      userId: null,
+      username: "[redacted]",
+      displayName: "[redacted]",
+    });
+    expect(result?.chat).toEqual({
+      chatId: "456",
+      username: "[redacted]",
+      title: "[redacted]",
+    });
+    expect(result?.snippet).toBe("[redacted]");
+  });
+
   it("hides fully redacted records from regular viewers", () => {
     expect(applyResolvedRedaction({ username: "hidden" }, fullRedaction, regularViewer)).toBeNull();
   });
 
-  it("lets privileged viewers bypass redactions", () => {
+  it("enforces redactions for privileged viewers by default", () => {
     const result = applyResolvedRedaction({ username: "visible" }, fullRedaction, privilegedViewer);
-    expect(result).toMatchObject({
-      username: "visible",
-      redaction: {
-        applied: true,
-        type: "full",
-      },
-    });
+    expect(result).toBeNull();
+  });
+
+  it("lets privileged viewers bypass redactions only when explicitly enabled", () => {
+    vi.stubEnv("ALLOW_REDACTION_BYPASS", "true");
+    const result = applyResolvedRedaction({ username: "visible" }, fullRedaction, privilegedViewer);
+    expect(result?.username).toBe("visible");
+    expect(result?.redaction).toMatchObject({ applied: true, type: "full" });
   });
 
   it("redacts group title when displayName is in fields", () => {

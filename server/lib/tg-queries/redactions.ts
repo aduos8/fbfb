@@ -133,6 +133,79 @@ export function buildRedactionMetadata(redaction?: ResolvedRedaction | null): Re
   };
 }
 
+const REDACTED_VALUE = "[redacted]";
+
+function redactObjectField(target: Record<string, unknown>, objectKey: string, fieldKey: string, value: unknown) {
+  const nested = target[objectKey];
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    target[objectKey] = {
+      ...(nested as Record<string, unknown>),
+      [fieldKey]: value,
+    };
+  }
+}
+
+function redactIdentityFields(target: Record<string, unknown>, fields: Set<RedactedField>) {
+  if (fields.has("userId")) {
+    target.telegramUserId = null;
+    target.userId = null;
+    redactObjectField(target, "sender", "userId", null);
+  }
+
+  if (fields.has("username")) {
+    target.username = REDACTED_VALUE;
+    redactObjectField(target, "sender", "username", REDACTED_VALUE);
+    redactObjectField(target, "chat", "username", REDACTED_VALUE);
+  }
+
+  if (fields.has("displayName")) {
+    target.displayName = REDACTED_VALUE;
+    target.display_name = REDACTED_VALUE;
+    target.channelTitle = REDACTED_VALUE;
+    target.groupTitle = REDACTED_VALUE;
+    target.title = REDACTED_VALUE;
+    redactObjectField(target, "sender", "displayName", REDACTED_VALUE);
+    redactObjectField(target, "chat", "title", REDACTED_VALUE);
+  }
+
+  if (fields.has("bio")) {
+    target.bio = REDACTED_VALUE;
+    target.description = REDACTED_VALUE;
+    target.channelDescription = REDACTED_VALUE;
+    target.groupDescription = REDACTED_VALUE;
+  }
+
+  if (fields.has("profilePhoto")) {
+    target.profilePhoto = null;
+    target.avatar_url = null;
+    target.avatarUrl = null;
+    target.profile_photo = null;
+  }
+
+  if (fields.has("phone")) {
+    target.phoneMasked = REDACTED_VALUE;
+  }
+
+  if (fields.has("messages")) {
+    target.content = REDACTED_VALUE;
+    target.snippet = REDACTED_VALUE;
+    target.highlightedSnippet = REDACTED_VALUE;
+    target.matchedTerms = [];
+  }
+
+  if (fields.has("groups") && Array.isArray(target.groups)) {
+    target.groups = [];
+  }
+
+  if (fields.has("channels") && Array.isArray(target.channels)) {
+    target.channels = [];
+  }
+
+  if (fields.has("groups") && Array.isArray(target.activeChats)) {
+    target.activeChats = [];
+  }
+}
+
 function resolveRedaction(row: DatabaseRedaction): ResolvedRedaction {
   const fields = normalizeRedactedFields(row.redacted_fields);
 
@@ -193,7 +266,13 @@ export function shouldHideRecord(
   redaction: ResolvedRedaction | null | undefined,
   viewer: ViewerAccess
 ) {
-  return Boolean(redaction && redaction.type === "full" && !viewer.canBypassRedactions);
+  return Boolean(redaction && redaction.type === "full" && !canBypassResolvedRedactions(viewer));
+}
+
+export function canBypassResolvedRedactions(viewer: ViewerAccess) {
+  const forceApplyRedactions = process.env.FORCE_APPLY_REDACTIONS === "true";
+  const allowRedactionBypass = process.env.ALLOW_REDACTION_BYPASS === "true";
+  return viewer.canBypassRedactions && allowRedactionBypass && !forceApplyRedactions;
 }
 
 export function applyResolvedRedaction<T extends Record<string, unknown>>(
@@ -203,18 +282,7 @@ export function applyResolvedRedaction<T extends Record<string, unknown>>(
 ): (T & { redaction: RedactionMetadata; isMasked?: boolean; maskedType?: string }) | null {
   const metadata = buildRedactionMetadata(redaction);
 
-  const forceApplyRedactions = process.env.FORCE_APPLY_REDACTIONS === "true";
-  const bypassRedactions = viewer.canBypassRedactions && !forceApplyRedactions;
-
-  console.log(`[redaction-debug] applyResolvedRedaction`, {
-    hasRedaction: !!redaction,
-    redactionType: redaction?.type,
-    viewerCanBypass: viewer.canBypassRedactions,
-    forceApplyRedactions,
-    bypassRedactions,
-    originalUsername: (record as any).username,
-    originalDisplayName: (record as any).displayName,
-  });
+  const bypassRedactions = canBypassResolvedRedactions(viewer);
 
   if (!redaction || bypassRedactions) {
     return {
@@ -224,37 +292,17 @@ export function applyResolvedRedaction<T extends Record<string, unknown>>(
   }
 
   if (redaction.type === "full") {
-    console.log(`[redaction-debug] returning null for full redaction`);
     return null;
   }
 
+  const fields = new Set(redaction.fields);
+
   if (redaction.type === "masked") {
-    console.log(`[redaction-debug] returning masked result for masked redaction`);
     const masked = { ...record } as Record<string, unknown>;
-    masked.username = null;
-    masked.displayName = "Record unavailable";
-    masked.display_name = "Record unavailable";
-    masked.channelTitle = "Record unavailable";
-    masked.groupTitle = "Record unavailable";
-    masked.title = "Record unavailable";
-    masked.bio = null;
-    masked.description = null;
-    masked.channelDescription = null;
-    masked.groupDescription = null;
-    masked.profilePhoto = null;
-    masked.avatar_url = null;
-    masked.avatarUrl = null;
-    masked.profile_photo = null;
+    redactIdentityFields(masked, fields.size > 0 ? fields : new Set(fullRedactionFields()));
     masked.telegramUserId = null;
     masked.userId = null;
-    masked.phoneMasked = null;
-    masked.content = null;
-    masked.snippet = null;
-    masked.highlightedSnippet = null;
-    masked.matchedTerms = [];
-    masked.groups = [];
-    masked.activeChats = [];
-    masked.channels = [];
+    redactObjectField(masked, "sender", "userId", null);
     return {
       ...(masked as T),
       redaction: metadata,
@@ -264,61 +312,7 @@ export function applyResolvedRedaction<T extends Record<string, unknown>>(
   }
 
   const next = { ...record } as Record<string, unknown>;
-  const fields = new Set(redaction.fields);
-
-  if (fields.has("userId")) {
-    next.telegramUserId = null;
-    next.userId = null;
-  }
-
-  if (fields.has("username")) {
-    next.username = "[redacted]";
-  }
-
-  if (fields.has("displayName")) {
-    next.displayName = "[redacted]";
-    next.display_name = "[redacted]";
-    next.channelTitle = "[redacted]";
-    next.groupTitle = "[redacted]";
-    next.title = "[redacted]";
-  }
-
-  if (fields.has("bio")) {
-    next.bio = "[redacted]";
-    next.description = "[redacted]";
-    next.channelDescription = "[redacted]";
-    next.groupDescription = "[redacted]";
-  }
-
-  if (fields.has("profilePhoto")) {
-    next.profilePhoto = null;
-    next.avatar_url = null;
-    next.avatarUrl = null;
-    next.profile_photo = null;
-  }
-
-  if (fields.has("phone")) {
-    next.phoneMasked = "[redacted]";
-  }
-
-  if (fields.has("messages")) {
-    next.content = "[redacted]";
-    next.snippet = "[redacted]";
-    next.highlightedSnippet = "[redacted]";
-    next.matchedTerms = [];
-  }
-
-  if (fields.has("groups") && Array.isArray(next.groups)) {
-    next.groups = [];
-  }
-
-  if (fields.has("channels") && Array.isArray(next.channels)) {
-    next.channels = [];
-  }
-
-  if (fields.has("groups") && Array.isArray(next.activeChats)) {
-    next.activeChats = [];
-  }
+  redactIdentityFields(next, fields);
 
   return {
     ...(next as T),

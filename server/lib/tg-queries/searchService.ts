@@ -44,6 +44,7 @@ import {
 import {
   applyResolvedRedaction,
   buildRedactionMetadata,
+  canBypassResolvedRedactions,
   loadRedactionMap,
   type ResolvedRedaction,
 } from "./redactions";
@@ -794,7 +795,7 @@ async function buildProfileResults(
     };
 
     const redaction = redactions.get(document.userId);
-    if (redaction?.type === "full" && !context.viewer.canBypassRedactions) {
+    if (redaction?.type === "full" && !canBypassResolvedRedactions(context.viewer)) {
       return [];
     }
 
@@ -863,7 +864,7 @@ async function buildChannelResults(
     };
 
     const redaction = redactions.get(document.chatId);
-    if (redaction?.type === "full" && !context.viewer.canBypassRedactions) {
+    if (redaction?.type === "full" && !canBypassResolvedRedactions(context.viewer)) {
       return [];
     }
 
@@ -910,7 +911,7 @@ async function buildGroupResults(
     };
 
     const redaction = redactions.get(document.chatId);
-    if (redaction?.type === "full" && !context.viewer.canBypassRedactions) {
+    if (redaction?.type === "full" && !canBypassResolvedRedactions(context.viewer)) {
       return [];
     }
 
@@ -1001,29 +1002,12 @@ async function buildMessageResults(
       redaction: buildRedactionMetadata(mergedRedaction),
     };
 
-    if (!mergedRedaction || context.viewer.canBypassRedactions) {
+    if (!mergedRedaction) {
       return [baseResult];
     }
 
-    const result = { ...baseResult };
-    if (mergedRedaction.fields.includes("messages")) {
-      result.snippet = "[redacted]";
-      result.highlightedSnippet = "[redacted]";
-      result.matchedTerms = [];
-    }
-    if (mergedRedaction.fields.includes("username")) {
-      result.sender.username = "[redacted]";
-      result.chat.username = "[redacted]";
-    }
-    if (mergedRedaction.fields.includes("displayName")) {
-      result.sender.displayName = "[redacted]";
-      result.chat.title = "[redacted]";
-    }
-    if (mergedRedaction.fields.includes("userId")) {
-      result.sender.userId = null;
-    }
-
-    return [result];
+    const redacted = applyResolvedRedaction(baseResult, mergedRedaction, context.viewer);
+    return redacted ? [redacted as MessageResult] : [];
   });
 }
 
@@ -1301,8 +1285,18 @@ export async function getLookupMessage(
   const hintTimestamp = parseLookupTimestamp(lookupHints?.timestamp);
   const hintBucket = lookupHints?.bucket ?? formatMessageBucket(hintTimestamp);
 
-  if (!message && hintBucket && hintTimestamp) {
-    message = await getMessageByChatBucketTimestamp(chatId, hintBucket, hintTimestamp, messageId);
+  if (hintBucket && hintTimestamp) {
+    const hydratedMessage = await getMessageByChatBucketTimestamp(chatId, hintBucket, hintTimestamp, messageId);
+    if (!message) {
+      message = hydratedMessage;
+    } else if (
+      hydratedMessage
+      && (message.has_media ?? Boolean(message.media_type || message.media_url))
+      && !message.media_url
+      && hydratedMessage.media_url
+    ) {
+      message = hydratedMessage;
+    }
   }
 
   if (!message) {
@@ -1318,45 +1312,34 @@ export async function getLookupMessage(
     ? (await loadRedactionMap("channel", [chatId])).get(chatId)
     : (await loadRedactionMap("group", [chatId])).get(chatId);
   const mergedRedaction = mergeRedactions(message.user_id ? senderRedactions.get(message.user_id) : null, chatRedaction);
-  if (mergedRedaction?.type === "full" && !context.viewer.canBypassRedactions) {
-    return null;
-  }
-
   const content = String(message.content ?? "");
   const messageTimestamp = serializeDate(message.timestamp ?? message.created_at);
   const messageBucket = message.bucket ?? hintBucket ?? formatMessageBucket(message.timestamp ?? message.created_at);
-  return {
+  const mediaUrl = toApiServedAssetUrl(message.media_url);
+  const result = {
     messageId: String(message.message_id),
     chatId: String(message.chat_id),
     timestamp: messageTimestamp,
-    content: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("messages")
-      ? "[redacted]"
-      : content,
-    highlightedSnippet: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("messages")
-      ? "[redacted]"
-      : highlightSnippet(snippetFromText(content, undefined, 220), undefined),
+    content,
+    highlightedSnippet: highlightSnippet(snippetFromText(content, undefined, 220), undefined),
     hasMedia: message.has_media ?? Boolean(message.media_type || message.media_url),
+    mediaType: message.media_type ?? null,
+    mediaUrl,
     containsLinks: containsLink(content),
     sender: {
       userId: message.user_id ?? null,
-      username: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("username")
-        ? "[redacted]"
-        : sender?.username ?? null,
-      displayName: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("displayName")
-        ? "[redacted]"
-        : sender?.display_name ?? null,
+      username: sender?.username ?? null,
+      displayName: sender?.display_name ?? null,
     },
     chat: {
       chatId: String(message.chat_id),
-      title: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("displayName")
-        ? "[redacted]"
-        : chat?.display_name ?? null,
+      title: chat?.display_name ?? null,
       type: chat?.chat_type ?? null,
-      username: mergedRedaction && !context.viewer.canBypassRedactions && mergedRedaction.fields.includes("username")
-        ? "[redacted]"
-        : chat?.username ?? null,
+      username: chat?.username ?? null,
     },
     contextLink: buildMessageContextLink(String(message.chat_id), String(message.message_id), messageBucket, messageTimestamp),
     redaction: buildRedactionMetadata(mergedRedaction),
   };
+
+  return applyResolvedRedaction(result, mergedRedaction, context.viewer) as typeof result | null;
 }

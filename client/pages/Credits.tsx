@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 import gsap from "gsap";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -7,7 +8,7 @@ import { useNavbarScroll } from "@/hooks/useScrollReveal";
 import { trpc } from "@/lib/trpc";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { toast } from "sonner";
-import { Coins, ArrowUpRight, Plus, ShoppingBag, CreditCard, User, Gift, ChevronDown, X } from "lucide-react";
+import { Coins, ArrowUpRight, Plus, ShoppingBag, CreditCard, User, Gift, ChevronLeft, ChevronRight, X } from "lucide-react";
 
 const transactionTypeConfig: Record<string, {
   label: string;
@@ -156,6 +157,7 @@ function getFriendlyDescription(txn: any): string {
 const PAGE_SIZE = 10;
 
 export default function Credits() {
+  const navigate = useNavigate();
   const pageRef = useRef<HTMLDivElement>(null);
   const navScrollRef = useNavbarScroll();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -163,14 +165,14 @@ export default function Credits() {
   const balanceCardRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
-  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
+  const [transactionPage, setTransactionPage] = useState(0);
   const [showTopUp, setShowTopUp] = useState(false);
   const [purchasingPkg, setPurchasingPkg] = useState<string | null>(null);
 
   const { data: balanceData } = trpc.credits.getBalance.useQuery();
   const { data: transactionsData, isFetching } = trpc.credits.listTransactions.useQuery({
-    limit: 100,
-    offset: 0,
+    limit: PAGE_SIZE,
+    offset: transactionPage * PAGE_SIZE,
   });
   const { data: packages } = trpc.purchases.getPackages.useQuery();
 
@@ -195,9 +197,8 @@ export default function Credits() {
   const progressPercent = Math.min(100, (currentBalance / creditLimit) * 100);
 
   const allTransactions = (transactionsData?.transactions ?? []) as any[];
-  const displayedTransactions = allTransactions.slice(0, displayCount);
   const totalTransactions = transactionsData?.total ?? allTransactions.length;
-  const hasMore = displayCount < totalTransactions;
+  const totalPages = Math.max(1, Math.ceil(totalTransactions / PAGE_SIZE));
 
   useEffect(() => {
     const ctx = gsap.context(() => {
@@ -225,21 +226,13 @@ export default function Credits() {
   };
 
   const handleBrowseItems = () => {
-    toast.success("Opening marketplace...");
-  };
-
-  const handleShowMore = () => {
-    gsap.to(tableRef.current, { opacity: 0.5, duration: 0.15 });
-    setTimeout(() => {
-      setDisplayCount((prev) => prev + PAGE_SIZE);
-      gsap.to(tableRef.current, { opacity: 1, duration: 0.2 });
-    }, 150);
+    navigate("/purchases");
   };
 
   return (
     <div ref={pageRef} className="min-h-screen bg-[#0f0f11] flex flex-col">
       <div
-        className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 rounded-b-[40px] md:rounded-b-[50px] overflow-hidden flex flex-col"
+        className="mx-4 sm:mx-8 md:mx-10 lg:mx-14 xl:mx-20 2xl:mx-24 rounded-b-[40px] md:rounded-b-[50px] overflow-hidden flex flex-col"
         style={{
           background: "radial-gradient(100% 100% at 50% 0%, rgba(15,15,17,0.50) 66.9%, rgba(58,42,238,0.50) 100%)",
           minHeight: "100vh",
@@ -333,9 +326,9 @@ export default function Credits() {
               </div>
 
               <div ref={tableRef}>
-                {displayedTransactions.length > 0 ? (
+                {allTransactions.length > 0 ? (
                   <>
-                    {displayedTransactions.map((txn, index) => {
+                    {allTransactions.map((txn, index) => {
                       const typeKey = txn.transaction_type || "";
                       const config = getTransactionConfig(txn);
                       const IconComponent = config.icon;
@@ -354,7 +347,7 @@ export default function Credits() {
                           key={txn.id || index}
                           className="group"
                           style={{
-                            borderBottom: index < displayedTransactions.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
+                            borderBottom: index < allTransactions.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
                           }}
                         >
                           <div className="px-6 md:px-8 py-4 md:py-5 hover:bg-white/[0.02] transition-colors">
@@ -393,25 +386,29 @@ export default function Credits() {
                       );
                     })}
 
-                    {hasMore && (
+                    {totalTransactions > PAGE_SIZE && (
                       <div className="px-6 md:px-8 py-5 flex items-center justify-center" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-                        <button
-                          onClick={handleShowMore}
-                          disabled={isFetching}
-                          className="flex items-center gap-2 px-5 py-2.5 rounded-[8px] bg-transparent font-sans font-normal text-[13px] text-white/60 hover:text-white hover:bg-white/5 transition-all cursor-pointer border border-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {isFetching ? (
-                            <>
-                              <div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-                              Loading...
-                            </>
-                          ) : (
-                            <>
-                              <ChevronDown className="w-4 h-4" />
-                              Show more ({allTransactions.length - displayCount} remaining)
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center gap-4">
+                          <button
+                            onClick={() => setTransactionPage((page) => Math.max(0, page - 1))}
+                            disabled={transactionPage === 0 || isFetching}
+                            className="flex items-center gap-2 px-4 py-2 rounded-[8px] bg-transparent font-sans font-normal text-[12px] text-white/60 hover:text-white hover:bg-white/5 transition-all cursor-pointer border border-white/15 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                            Prev
+                          </button>
+                          <span className="font-sans text-[12px] text-white/35">
+                            Page {transactionPage + 1} of {totalPages}
+                          </span>
+                          <button
+                            onClick={() => setTransactionPage((page) => page + 1)}
+                            disabled={transactionPage + 1 >= totalPages || isFetching}
+                            className="flex items-center gap-2 px-4 py-2 rounded-[8px] bg-transparent font-sans font-normal text-[12px] text-white/60 hover:text-white hover:bg-white/5 transition-all cursor-pointer border border-white/15 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Next
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>

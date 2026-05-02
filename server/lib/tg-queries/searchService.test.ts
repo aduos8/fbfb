@@ -165,6 +165,41 @@ describe("getLookupMessage", () => {
       "/lookup/message/c1/m1?bucket=202403&timestamp=2024-03-10T12%3A00%3A00.000Z"
     );
   });
+
+  it("rehydrates media messages from messages_by_chat when messages_by_id lacks media details", async () => {
+    queryMocks.getMessageById.mockResolvedValue({
+      chat_id: "c1",
+      message_id: "m2",
+      user_id: "u1",
+      content: "",
+      timestamp: new Date("2024-03-10T12:00:00.000Z"),
+      bucket: "202403",
+      has_media: true,
+    });
+    queryMocks.getMessageByChatBucketTimestamp.mockResolvedValue({
+      chat_id: "c1",
+      message_id: "m2",
+      user_id: "u1",
+      content: "",
+      timestamp: new Date("2024-03-10T12:00:00.000Z"),
+      bucket: "202403",
+      has_media: true,
+      media_type: "image",
+      media_url: "media/test.webp",
+    });
+
+    const result = await getLookupMessage(
+      "c1",
+      "m2",
+      { viewer: { canBypassRedactions: false } } as any,
+      { bucket: "202403", timestamp: "2024-03-10T12:00:00.000Z" }
+    );
+
+    expect(queryMocks.getMessageByChatBucketTimestamp).toHaveBeenCalledTimes(1);
+    expect(result?.hasMedia).toBe(true);
+    expect(result?.mediaType).toBe("image");
+    expect(result?.mediaUrl).toBe("https://assets.example.com/media/test.webp");
+  });
 });
 
 describe("runMessageSearch", () => {

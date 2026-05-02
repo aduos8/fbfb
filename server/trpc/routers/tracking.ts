@@ -13,7 +13,7 @@ import {
   type TrackingRecord,
 } from '../../lib/db/tracking';
 import { loadObservedProfileForUser, chargeTrackingCredits } from '../../lib/trackingSupport';
-import { loadSingleRedaction } from '../../lib/tg-queries/redactions';
+import { canBypassResolvedRedactions, loadSingleRedaction } from '../../lib/tg-queries/redactions';
 import { canUseTrackingPack, getViewerAccess } from '../../lib/tg-queries/viewer';
 import type { Context } from '../context';
 
@@ -100,7 +100,7 @@ export const trackingRouter = t.router({
 
       const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
       const profileRedaction = await loadSingleRedaction("user", input.profileUserId);
-      const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+      const isRedacted = profileRedaction?.type === "full" && !canBypassResolvedRedactions(viewer);
 
       return {
         tracking: serializeTrackingRecord(tracking, isRedacted),
@@ -130,7 +130,7 @@ export const trackingRouter = t.router({
       const result = await Promise.all(
         trackings.map(async (tracking) => {
           const profileRedaction = await loadSingleRedaction("user", tracking.profile_user_id);
-          const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+          const isRedacted = profileRedaction?.type === "full" && !canBypassResolvedRedactions(viewer);
           return serializeTrackingRecord(tracking, isRedacted);
         })
       );
@@ -147,7 +147,7 @@ export const trackingRouter = t.router({
       const result = await Promise.all(
         trackings.map(async (tracking) => {
           const profileRedaction = await loadSingleRedaction("user", tracking.profile_user_id);
-          const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+          const isRedacted = profileRedaction?.type === "full" && !canBypassResolvedRedactions(viewer);
           return serializeTrackingRecord(tracking, isRedacted);
         })
       );
@@ -184,7 +184,7 @@ export const trackingRouter = t.router({
           const profileRedaction = await loadSingleRedaction("user", profileId);
           redactionMap.set(
             profileId,
-            profileRedaction?.type === "full" && !viewer.canBypassRedactions
+            profileRedaction?.type === "full" && !canBypassResolvedRedactions(viewer)
           );
         })
       );
@@ -217,7 +217,7 @@ export const trackingRouter = t.router({
 
       const viewer = await getViewerAccess({ userId: ctx.userId, role: ctx.userRole });
       const profileRedaction = await loadSingleRedaction("user", input.profileUserId);
-      const isRedacted = profileRedaction?.type === "full" && !viewer.canBypassRedactions;
+      const isRedacted = profileRedaction?.type === "full" && !canBypassResolvedRedactions(viewer);
 
       return {
         isTracking: true,

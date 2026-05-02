@@ -46,13 +46,13 @@ function HistorySection({
           </div>
         ))}
       </div>
-      {hasMore && !expanded && (
+      {hasMore && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
+          onClick={() => setExpanded((value) => !value)}
           className="mt-4 w-full rounded-[8px] border border-white/10 bg-white/[0.03] px-3 py-2 font-sans text-[12px] text-white/65 transition-colors hover:bg-white/[0.06] hover:text-white"
         >
-          See more
+          {expanded ? "See less" : "See more"}
         </button>
       )}
     </div>
@@ -95,6 +95,17 @@ function formatMessageDate(timestamp: string | null) {
   });
 }
 
+function getRecentMessagePreview(message: LookupMessage) {
+  const trimmed = message.content.trim();
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+  if (message.hasMedia) {
+    return "Click to view media";
+  }
+  return "No message content";
+}
+
 function LastMessagesSection({
   response,
   isLoading,
@@ -107,7 +118,7 @@ function LastMessagesSection({
   const lockedCopy = unavailableReason === "message_access_required"
     ? "Message history requires a Pro/Enterprise plan or the Message History add-on."
     : unavailableReason === "redacted"
-      ? "Messages for this profile are redacted."
+      ? "Messages for this profile are redacted by policy."
       : null;
 
   return (
@@ -161,7 +172,7 @@ function LastMessagesSection({
                 )}
               </div>
               <p className="line-clamp-2 font-sans text-[12px] leading-5 text-white/50">
-                {message.content}
+                {getRecentMessagePreview(message)}
               </p>
             </Link>
           ))}
@@ -296,9 +307,9 @@ export default function ProfileLookup() {
                     <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-[rgba(255,255,255,0.08)] text-white/70 uppercase">
                       {userData.trackingStatus || "Not tracked"}
                     </span>
-                    {userData.redaction.applied && userData.redaction.type === "partial" && (
+                    {userData.redaction.applied && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-[rgba(255,74,74,0.12)] text-[#ff8a8a] uppercase">
-                        Redacted
+                        {userData.redaction.type === "masked" ? "Masked Redaction" : "Redacted"}
                       </span>
                     )}
                     {userData.isMasked && (

@@ -57,7 +57,7 @@ export default function AdminAuditLogs() {
 
   return (
     <div ref={contentRef}>
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="auditlogs-title font-sans font-semibold text-white text-[28px] sm:text-[32px] md:text-[35px] leading-none">
             Audit <span className="font-handwriting text-[#3A2AEE]">Logs</span>
@@ -73,18 +73,18 @@ export default function AdminAuditLogs() {
         </button>
       </div>
 
-      <div className="flex gap-4 mb-6 flex-wrap">
-        <div className="flex items-center gap-3 px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
+      <div className="grid grid-cols-1 gap-3 mb-6 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
           <Filter className="w-4 h-4 text-white/40" />
           <input
             type="text"
             value={actionFilter}
             onChange={(e) => setActionFilter(e.target.value)}
             placeholder="Filter by action..."
-            className="bg-transparent outline-none font-sans text-[13px] text-white/60 placeholder:text-white/30 w-[180px]"
+            className="bg-transparent outline-none font-sans text-[13px] text-white/60 placeholder:text-white/30 w-full"
           />
         </div>
-        <div className="flex items-center gap-3 px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
+        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
           <span className="font-sans text-[12px] text-white/40">From:</span>
           <input
             type="date"
@@ -93,7 +93,7 @@ export default function AdminAuditLogs() {
             className="bg-transparent outline-none font-sans text-[13px] text-white/60 [color-scheme:dark]"
           />
         </div>
-        <div className="flex items-center gap-3 px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
+        <div className="flex items-center gap-3 px-4 sm:px-5 py-3 rounded-[12px] bg-[#232327] border border-[rgba(255,255,255,0.08)]">
           <span className="font-sans text-[12px] text-white/40">To:</span>
           <input
             type="date"
@@ -105,7 +105,7 @@ export default function AdminAuditLogs() {
       </div>
 
       <div className="auditlogs-table card-border-gradient rounded-[20px] overflow-hidden">
-        <table className="w-full">
+        <table className="hidden lg:table w-full">
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
               {["Timestamp", "Admin", "Action", "Target", "Details"].map((h) => (
@@ -155,6 +155,49 @@ export default function AdminAuditLogs() {
             ))}
           </tbody>
         </table>
+        <div className="lg:hidden divide-y divide-white/[0.04]">
+          {logList.map((log: any, i: number) => (
+            <div key={i} className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-sans font-medium text-[13px] text-white/78">{actionLabel(log.action)}</p>
+                  <p className="mt-1 font-sans text-[11px] text-white/38">
+                    {log.created_at ? new Date(log.created_at).toLocaleString("en-GB", {
+                      day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+                    }) : "-"}
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-sans text-[10px] text-white/45">
+                  Admin
+                </span>
+              </div>
+              <div className="mt-4 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="font-sans text-[10px] uppercase tracking-[0.1em] text-white/35">Admin ID</span>
+                  <span className="max-w-[62%] break-all text-right font-mono text-[11px] text-white/45">{log.admin_id || log.adminId || "-"}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="font-sans text-[10px] uppercase tracking-[0.1em] text-white/35">Target</span>
+                  <span className="max-w-[62%] break-all text-right font-mono text-[11px] text-white/40">{log.target_entity || log.targetEntity || log.target_id || "-"}</span>
+                </div>
+                <p className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3 py-2 font-sans text-[11px] leading-5 text-white/45">
+                  {(() => {
+                    try {
+                      const meta = typeof log.metadata === "string" ? JSON.parse(log.metadata) : log.metadata;
+                      if (!meta) return "No details";
+                      if (log.action === "credit_adjustment" || log.action === "credit_set_balance") {
+                        return `${meta.amount > 0 ? "+" : ""}${meta.amount} credits${meta.reason ? ` - ${meta.reason}` : ""}`;
+                      }
+                      if (log.action === "user_role_change") return `Role: ${meta.role}`;
+                      if (log.action === "purchase_refund") return meta.reason || "Refunded";
+                      return meta.reason || JSON.stringify(meta);
+                    } catch { return "No details"; }
+                  })()}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
         {logList.length === 0 && (
           <div className="py-16 text-center">
             <ScrollText className="w-10 h-10 text-white/15 mx-auto mb-4" />
